@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Collaborative Editor</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-layout">
+      <aside class="activity-bar" aria-label="Application navigation">
+        <button id="toggle-directory" class="activity-button" type="button" aria-label="Toggle Explorer" aria-pressed="false" title="Explorer">▱</button>
+        <button id="toggle-tokens" class="activity-button" type="button" aria-label="Toggle agent tokens" aria-pressed="false" title="Agent tokens">🔑</button>
+      </aside>
+      <aside id="directory-sidebar" class="directory-sidebar" data-testid="directory-sidebar" aria-label="Explorer" hidden>
+        <div class="directory-header">
+          <h2>EXPLORER</h2>
+          <button id="directory-refresh" class="directory-refresh" type="button" aria-label="Refresh Explorer" title="Refresh">↻</button>
+        </div>
+        <div id="directory-auth-gate" class="token-gate" hidden>
+          <p>Sign in to browse folders and documents.</p>
+          <button id="directory-signin" class="primary-action" type="button">Sign in with GitHub</button>
+        </div>
+        <div id="directory-authed" hidden>
+          <div class="directory-root-name">AI COLLABORATIVE EDITOR</div>
+          <div id="directory-tree" class="directory-tree"><p class="directory-status">Loading…</p></div>
+        </div>
+      </aside>
+      <div id="directory-context-menu" class="directory-context-menu" hidden>
+        <button id="directory-new-folder" type="button">New folder</button>
+        <button id="directory-new-document" type="button">New document</button>
+        <button id="directory-import-document" type="button">Import Markdown…</button>
+        <button id="directory-attach-file" type="button">Attach file…</button>
+        <button id="directory-insert-file" type="button">Insert into document</button>
+        <button id="directory-export-document" type="button">Export Markdown</button>
+        <button id="directory-download-file" type="button">Download</button>
+        <button id="directory-rename" type="button">Rename</button>
+        <button id="directory-move" type="button">Move to…</button>
+        <button id="directory-delete" class="danger-action" type="button">Delete</button>
+      </div>
+      <input id="file-upload-input" type="file" multiple hidden aria-hidden="true" />
+      <input id="import-md-input" type="file" accept=".md,.markdown,.txt,.zip,text/markdown,text/plain,application/zip" hidden aria-hidden="true" />
+      <aside id="token-sidebar" class="directory-sidebar token-sidebar" data-testid="token-sidebar" aria-label="Agent tokens" hidden>
+        <div class="directory-header">
+          <h2>AGENT TOKENS</h2>
+          <button id="token-refresh" class="directory-refresh" type="button" aria-label="Refresh tokens" title="Refresh">↻</button>
+        </div>
+        <p class="token-note">A token authenticates an agent; the server stores only its hash, never the value.</p>
+        <div id="token-auth-gate" class="token-gate" hidden>
+          <p>Sign in to create and manage agent tokens.</p>
+          <button id="token-signin" class="primary-action" type="button">Sign in with GitHub</button>
+        </div>
+        <div id="token-authed" hidden>
+          <form id="token-create-form" class="token-form">
+            <input id="token-name-input" class="name-dialog-input" type="text" autocomplete="off" placeholder="Token name, e.g. researcher-bot" />
+            <button id="token-create" class="primary-action" type="submit">Create token</button>
+            <p id="token-create-error" class="dialog-error" hidden></p>
+          </form>
+          <div id="token-created" class="token-created" hidden>
+            <p class="token-created-warning">We don't keep this value — copy it now. You won't see it again.</p>
+            <div class="token-created-value">
+              <input id="token-created-input" class="name-dialog-input" type="text" readonly />
+              <button id="token-copy" class="primary-action" type="button">Copy</button>
+            </div>
+            <button id="token-created-done" type="button">I've copied it</button>
+          </div>
+          <div id="token-list" class="token-list"><p class="directory-status">Loading…</p></div>
+        </div>
+      </aside>
+      <div id="move-dialog" class="dialog-backdrop" hidden>
+        <section class="move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title">
+          <h2 id="move-dialog-title">Move to…</h2>
+          <p id="move-dialog-item" class="dialog-description"></p>
+          <div id="move-targets" class="move-targets"></div>
+          <p id="move-error" class="dialog-error" hidden></p>
+          <div class="dialog-actions">
+            <button id="move-cancel" type="button">Cancel</button>
+            <button id="move-confirm" class="primary-action" type="button" disabled>Move</button>
+          </div>
+        </section>
+      </div>
+      <div id="share-dialog" class="dialog-backdrop" hidden>
+        <section class="move-dialog" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
+          <h2 id="share-dialog-title">Share document</h2>
+          <p class="dialog-description">Grant a person or agent access to this document. Owners and admins keep full access.</p>
+          <div id="share-list" class="share-list"></div>
+          <form id="share-add-form" class="share-add-form">
+            <select id="share-principal" class="share-principal" aria-label="Person or agent"></select>
+            <select id="share-level" class="share-level" aria-label="Access level">
+              <option value="editor">can edit</option>
+              <option value="viewer">can view</option>
+            </select>
+            <button id="share-add" type="submit" class="primary-action">Add</button>
+          </form>
+          <p id="share-error" class="dialog-error" hidden></p>
+          <div class="dialog-actions">
+            <button id="share-close" type="button">Done</button>
+          </div>
+        </section>
+      </div>
+      <div id="name-dialog" class="dialog-backdrop" hidden>
+        <section class="move-dialog" role="dialog" aria-modal="true" aria-labelledby="name-dialog-title">
+          <h2 id="name-dialog-title">New item</h2>
+          <p id="name-dialog-description" class="dialog-description"></p>
+          <input id="name-dialog-input" class="name-dialog-input" type="text" autocomplete="off" />
+          <p id="name-dialog-error" class="dialog-error" hidden></p>
+          <div class="dialog-actions">
+            <button id="name-cancel" type="button">Cancel</button>
+            <button id="name-save" class="primary-action" type="button">Save</button>
+          </div>
+        </section>
+      </div>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">Prototype</p>
+          <h1>AI Collaborative Editor</h1>
+          <p class="subtitle">A collaborative Markdown document with live Mermaid previews.</p>
+        </div>
+        <div class="header-right">
+          <div id="auth-status" class="auth-status"></div>
+          <div id="connection" class="status">Connecting…</div>
+        </div>
+      </header>
+
+      <section id="signin-screen" class="signin-screen" data-testid="signin-screen" hidden>
+        <h2>Please sign in</h2>
+        <p>Sign in with GitHub to view and edit the collaborative document.</p>
+        <button id="signin-screen-button" class="primary-action" type="button">Sign in with GitHub</button>
+      </section>
+
+      <div id="app-main" hidden>
+        <section class="stats" aria-label="Document metadata">
+          <div><span>Revision</span><strong id="revision">—</strong></div>
+          <div><span>Last updated by</span><strong id="last-updated-by">—</strong></div>
+          <div><span>Updated</span><strong id="updated-at">—</strong></div>
+        </section>
+
+        <section class="workspace">
+          <article class="document-card">
+            <div class="card-heading"><h2 id="document-title">Shared document</h2><span id="edit-mode" class="edit-mode"></span><button id="toggle-comments" class="share-button" type="button" aria-pressed="false" hidden>Comments</button><button id="toggle-activity" class="share-button" type="button" aria-pressed="false" hidden>History</button><button id="share-document" class="share-button" type="button" hidden>Share…</button></div>
+            <div class="editor-shell">
+              <div id="document" class="document" data-testid="document" aria-label="Shared document"></div>
+              <section id="comments-panel" class="comments-panel" data-testid="comments-panel" aria-label="Comments" hidden>
+                <header class="comments-panel-header">
+                  <strong>Comments</strong>
+                  <label class="comments-filter"><input id="comments-show-resolved" type="checkbox" /> Show resolved</label>
+                </header>
+                <div id="comments-list" class="comments-list"></div>
+              </section>
+              <section id="activity-panel" class="comments-panel" data-testid="activity-panel" aria-label="History" hidden>
+                <header class="comments-panel-header"><strong>History</strong></header>
+                <div id="activity-list" class="comments-list"></div>
+              </section>
+            </div>
+          </article>
+        </section>
+      </div>
+      <p id="error" class="error" hidden></p>
+    </main>
+    </div>
+    <script type="module" src="/app.js?v=codemirror-1"></script>
+  </body>
+</html>

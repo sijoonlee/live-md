@@ -1,0 +1,43 @@
+{
+  "name": "live-md",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "npm run build:client && tsx watch src/server.ts",
+    "build": "npm run build:client && tsc",
+    "build:client": "esbuild src/client.ts --bundle --format=iife --outfile=public/app.js",
+    "start": "node dist/server.js",
+    "mint-token": "tsx src/mint-token.ts",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:sdk": "tsx --test tests/unit/agent-client.test.ts",
+    "test:unit": "tsx --test tests/unit/*.test.ts"
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
+    "codemirror": "^6.0.2",
+    "dompurify": "^3.4.14",
+    "express": "^5.1.0",
+    "marked": "^18.0.10",
+    "mermaid": "^11.17.0",
+    "ws": "^8.18.3",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.9",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.2"
+  }
+}
