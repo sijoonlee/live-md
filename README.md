@@ -67,6 +67,13 @@ Open <http://localhost:3000>.
   mutually-known collaborators.
 - **`ADMIN_GITHUB`** — allowlist (keyed on a trusted attribute) that bootstraps admins.
 - **`DATA_DIR`** — where the SQLite database and file blobs live (default `data/`).
+- **`AUTH_MODE`** — `github` (default) or `none`. `none` disables sign-in entirely and
+  treats every caller as a single local admin, for running live-md on your own machine
+  beside an editor and an agent terminal. It is only safe on loopback, which the server
+  enforces: it refuses to start unless bound to `127.0.0.1`, and rejects requests carrying
+  a foreign `Origin` or a non-localhost `Host` (any page you visit can otherwise reach
+  `localhost`, and there is no cookie to stop it). Agents name themselves with an
+  `X-Agent-Id` header, unverified, so history attribution still works.
 
 Agents authenticate with opaque bearer tokens instead of a session. Create one from the
 browser's token panel (🔑), or from the host with `npm run mint-token -- --name "<agent>"`.
@@ -87,9 +94,41 @@ token — except `GET /api/me`. Access is decided per document; no access → 40
 - **Realtime:** `WS /ws?doc=<id>` — join one document's room for live document + cursor
   events.
 
+## MCP
+
+Agents reach documents over [MCP](https://modelcontextprotocol.io) at `POST /api/mcp`
+(streamable HTTP, stateless), so Claude Code and anything else that speaks MCP can work
+on a document a person has open in the browser — edits arrive live, no reload.
+
+| Tool | |
+| --- | --- |
+| `list_documents` | documents this agent can read, with folder paths |
+| `read_document` | Markdown content plus a `version` for optimistic concurrency |
+| `edit_document` | replace an exact passage (`oldString` → `newString`) |
+| `append_document` | append to the end |
+| `add_comment` | comment on a passage instead of editing it |
+| `list_comments` | a document's comment threads |
+
+Edits are **anchored, not offset-based**: `oldString` is resolved against the document's
+current content at the moment of the edit, so a person typing elsewhere never invalidates
+it. An anchor that matches zero or several places is refused with an error telling the
+agent to re-read or add context — never a fuzzy match, which would confidently rewrite the
+wrong paragraph.
+
+Authentication is whatever the rest of `/api` uses, and every tool call goes through the
+same `can()` choke point: an agent sees only documents shared with it, and anything else
+404s. `GET /api/mcp/config` returns a ready-to-paste client config.
+
+```jsonc
+// with AUTH_MODE=none
+{"mcpServers": {"live-md": {"type": "http", "url": "http://localhost:3000/api/mcp",
+                            "headers": {"X-Agent-Id": "claude-code"}}}}
+```
+
 ## Agent SDK
 
-`AgentClient` (`src/agent-client.ts`) is a small Node client: it targets one document,
+Prefer MCP above for agents that speak it. `AgentClient` (`src/agent-client.ts`) is a
+small Node client for those that don't: it targets one document,
 keeps a local `Y.Doc`, and offers `insert` / `delete` / `replace`, cursor publishing,
 attachments, comments, history, and Markdown import/export.
 
@@ -136,6 +175,8 @@ src/
   comments.ts        line-anchored comment threads (Yjs)
   activity.ts        durable activity/history log + server-minted update ids
   markdown-assets.ts / zip.ts   import/export link rewriting + store-only zip
+  mcp.ts / mcp-tools.ts   the MCP server: transport, and the anchored document tools
+  auth-mode.ts / loopback-guard.ts   optional auth (AUTH_MODE=none) + its loopback guard
   agent-client.ts    the AgentClient SDK
   client.ts          the browser app (bundled to public/app.js)
 ```

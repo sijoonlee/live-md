@@ -93,3 +93,19 @@ test("an origin on another local port is still cross-origin", () => {
   const reason = loopbackRejection({host: "localhost:3000", origin: "http://localhost:4000"}, 3000);
   assert.match(reason ?? "", /cross-origin/);
 });
+
+// Naming yourself must not cost you access, or agents get pushed into staying
+// anonymous to see anything.
+test("a declared agent is elevated like the local user", () => {
+  assert.equal(declaredAgentPrincipal({"x-agent-id": "claude-code"})?.role, "admin");
+});
+
+// A database used once in open mode must not come back under AUTH_MODE=github
+// carrying admins nobody granted, so the elevation stays in memory.
+test("the elevation is never written to the principals table", async () => {
+  const {getPrincipal} = await import("../../src/auth.js");
+  const local = localPrincipal();
+  const agent = declaredAgentPrincipal({"x-agent-id": "persistence-check"})!;
+  assert.equal(getPrincipal(local.id)?.role, "member");
+  assert.equal(getPrincipal(agent.id)?.role, "member");
+});

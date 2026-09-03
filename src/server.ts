@@ -33,6 +33,7 @@ import {getAgentByName, getPrincipal, listPrincipals, listTokens, mintAgentToken
 import {createSession, deleteSession, getSessionPrincipal, upsertHumanPrincipal} from "./human-auth.js";
 import {authDisabled, authMode, localPrincipal, openModePrincipal} from "./auth-mode.js";
 import {loopbackRejection, noteRejection, resolveBindHost} from "./loopback-guard.js";
+import {mcpHandler} from "./mcp.js";
 import {isAllowed, parseAllowlist} from "./allowlist.js";
 import {createRateLimiter} from "./rate-limit.js";
 import {
@@ -224,6 +225,28 @@ app.use("/api", (req, res, next) => {
   if (req.path === "/me") return next();
   if (!principalFromRequest(req)) return res.status(401).json({error: "authentication required"});
   return next();
+});
+
+// --- MCP -----------------------------------------------------------------
+// How an agent living outside the browser (Claude Code in a terminal) works on the
+// same document a person has open. Authentication is whatever the rest of /api
+// uses — an agent bearer token, or nothing at all under AUTH_MODE=none — and each
+// tool re-checks access per document, so this adds a transport, not a privilege.
+app.post("/api/mcp", mcpHandler(acceptUpdate, principalFromRequest));
+
+// The MCP client config for this server, so connecting an agent is a copy-paste
+// rather than a documentation exercise. Human-session only: it may carry a token.
+app.get("/api/mcp/config", (req, res) => {
+  if (!authedHuman(req, res)) return;
+  res.json({
+    mcpServers: {
+      "live-md": {
+        type: "http",
+        url: `http://localhost:${port}/api/mcp`,
+        ...(authDisabled ? {headers: {"X-Agent-Id": "claude-code"}} : {headers: {Authorization: "Bearer <agent token>"}}),
+      },
+    },
+  });
 });
 
 // --- Id-keyed document content API ----------------------------------------
