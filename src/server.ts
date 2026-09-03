@@ -31,6 +31,8 @@ import {evictIdle, getLiveDocument, liveDocumentIds, snapshotAll} from "./docume
 import {can, type Action} from "./authz.js";
 import {getAgentByName, getPrincipal, listPrincipals, listTokens, mintAgentToken, revokeToken, setPrincipalRole, verifyToken, type Principal} from "./auth.js";
 import {createSession, deleteSession, getSessionPrincipal, upsertHumanPrincipal} from "./human-auth.js";
+import {authDisabled, authMode, localPrincipal, openModePrincipal} from "./auth-mode.js";
+import {loopbackRejection, noteRejection, resolveBindHost} from "./loopback-guard.js";
 import {isAllowed, parseAllowlist} from "./allowlist.js";
 import {createRateLimiter} from "./rate-limit.js";
 import {
@@ -45,12 +47,25 @@ import {
 } from "./files.js";
 
 const port = Number(process.env.PORT ?? 3000);
+// Throws (refusing to start) when AUTH_MODE=none is paired with a non-loopback bind.
+const bindHost = resolveBindHost(process.env.HOST);
 const app = express();
 const server = createServer(app);
 const websocketServer = new WebSocketServer({server, path: "/ws"});
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../public");
 
 app.use(express.json({limit: "2mb"}));
+
+// With authentication off, keep the open server from being driven by a web page
+// the user happens to be visiting, or reached under a rebound hostname.
+if (authDisabled) {
+  app.use((req, res, next) => {
+    const reason = loopbackRejection({origin: req.headers.origin, host: req.headers.host}, port);
+    if (!reason) return next();
+    noteRejection(reason);
+    return res.status(403).json({error: "refused: this server accepts local requests only"});
+  });
+}
 app.use(express.static(publicDir));
 
 const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -87,11 +102,14 @@ const parseCookies = (req: express.Request): Record<string, string> => parseCook
 const setSessionCookie = (res: express.Response, id: string, expiresAt: string) =>
   res.cookie("sid", id, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, expires: new Date(expiresAt)});
 
+// In open mode every caller is the single local user (or the agent it declares
+// itself to be); otherwise identity comes from the session cookie.
 const sessionPrincipal = (req: express.Request): Principal | undefined =>
-  getSessionPrincipal(parseCookies(req).sid);
+  authDisabled ? openModePrincipal(req.headers) : getSessionPrincipal(parseCookies(req).sid);
 
 // Require a signed-in human. On failure writes a 401 and returns undefined.
 const authedHuman = (req: express.Request, res: express.Response): Principal | undefined => {
+  if (authDisabled) return localPrincipal();
   const principal = sessionPrincipal(req);
   if (!principal || principal.kind !== "human") {
     res.status(401).json({error: "sign in to perform this action"});
@@ -112,6 +130,7 @@ const principalFromRequest = (req: express.Request): Principal | undefined => {
 // This is what makes identity server-set: the authoring identity comes from the
 // verified token, never from a client-supplied agentId.
 const authedPrincipal = (req: express.Request, res: express.Response): Principal | undefined => {
+  if (authDisabled) return openModePrincipal(req.headers);
   const match = /^Bearer (.+)$/.exec(req.header("authorization") ?? "");
   const principal = match ? verifyToken(match[1]) : undefined;
   if (!principal) {
@@ -652,72 +671,78 @@ app.delete("/api/files/:id", (req, res) => {
 const safeReturnTo = (value: unknown): string | undefined =>
   typeof value === "string" && /^\/(?!\/)/.test(value) && value.length <= 512 ? value : undefined;
 
-app.get("/auth/login", (req, res) => {
-  if (!githubClientId) return res.status(500).send("GitHub OAuth is not configured (set GITHUB_CLIENT_ID).");
-  const state = crypto.randomUUID();
-  res.cookie("oauth_state", state, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
-  // Remember where the visitor was (e.g. a shared /documents/:id deep link) so the
-  // callback can land them back there instead of the home page.
-  const returnTo = safeReturnTo(req.query.returnTo);
-  if (returnTo) res.cookie("oauth_return", returnTo, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
-  const params = new URLSearchParams({
-    client_id: githubClientId,
-    redirect_uri: githubCallbackUrl,
-    scope: "read:user user:email",
-    state,
-  });
-  return res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
-});
-
-app.get("/auth/callback", async (req, res) => {
-  const {code, state} = req.query;
-  if (typeof code !== "string" || typeof state !== "string" || state !== parseCookies(req).oauth_state) {
-    return res.status(400).send("Invalid OAuth state.");
-  }
-  res.clearCookie("oauth_state");
-  try {
-    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
-      method: "POST",
-      headers: {accept: "application/json", "content-type": "application/json"},
-      body: JSON.stringify({client_id: githubClientId, client_secret: githubClientSecret, code, redirect_uri: githubCallbackUrl}),
+// The OAuth flow only exists when sign-in does. In open mode these routes are
+// never registered, so a stray /auth/login 404s instead of failing confusingly.
+if (!authDisabled) {
+  app.get("/auth/login", (req, res) => {
+    if (!githubClientId) return res.status(500).send("GitHub OAuth is not configured (set GITHUB_CLIENT_ID).");
+    const state = crypto.randomUUID();
+    res.cookie("oauth_state", state, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
+    // Remember where the visitor was (e.g. a shared /documents/:id deep link) so the
+    // callback can land them back there instead of the home page.
+    const returnTo = safeReturnTo(req.query.returnTo);
+    if (returnTo) res.cookie("oauth_return", returnTo, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
+    const params = new URLSearchParams({
+      client_id: githubClientId,
+      redirect_uri: githubCallbackUrl,
+      scope: "read:user user:email",
+      state,
     });
-    const accessToken = (await tokenResponse.json())?.access_token;
-    if (!accessToken) return res.status(401).send("OAuth token exchange failed.");
+    return res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+  });
 
-    const ghHeaders = {authorization: `Bearer ${accessToken}`, accept: "application/vnd.github+json", "user-agent": "ai-collaborative-editor"};
-    const user = await (await fetch("https://api.github.com/user", {headers: ghHeaders})).json();
-    let email: string | undefined = user.email ?? undefined;
-    if (!email) {
-      const emails = await (await fetch("https://api.github.com/user/emails", {headers: ghHeaders})).json();
-      if (Array.isArray(emails)) {
-        email = (emails.find((e) => e.primary && e.verified) ?? emails.find((e) => e.verified))?.email;
+  app.get("/auth/callback", async (req, res) => {
+    const {code, state} = req.query;
+    if (typeof code !== "string" || typeof state !== "string" || state !== parseCookies(req).oauth_state) {
+      return res.status(400).send("Invalid OAuth state.");
+    }
+    res.clearCookie("oauth_state");
+    try {
+      const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: {accept: "application/json", "content-type": "application/json"},
+        body: JSON.stringify({client_id: githubClientId, client_secret: githubClientSecret, code, redirect_uri: githubCallbackUrl}),
+      });
+      const accessToken = (await tokenResponse.json())?.access_token;
+      if (!accessToken) return res.status(401).send("OAuth token exchange failed.");
+
+      const ghHeaders = {authorization: `Bearer ${accessToken}`, accept: "application/vnd.github+json", "user-agent": "ai-collaborative-editor"};
+      const user = await (await fetch("https://api.github.com/user", {headers: ghHeaders})).json();
+      let email: string | undefined = user.email ?? undefined;
+      if (!email) {
+        const emails = await (await fetch("https://api.github.com/user/emails", {headers: ghHeaders})).json();
+        if (Array.isArray(emails)) {
+          email = (emails.find((e) => e.primary && e.verified) ?? emails.find((e) => e.verified))?.email;
+        }
       }
+      if (!isAllowed(allowlist, user.login, email)) {
+        return res.status(403).send("This GitHub account is not on the allowlist for this application.");
+      }
+      const principal = upsertHumanPrincipal("github", String(user.id), email, user.name || user.login);
+      // Re-evaluate the role on every sign-in so allowlist changes take effect.
+      setPrincipalRole(principal.id, isAllowed(adminAllowlist, user.login, email) ? "admin" : "member");
+      const {id, expiresAt} = createSession(principal.id);
+      setSessionCookie(res, id, expiresAt);
+      const returnTo = safeReturnTo(parseCookies(req).oauth_return) ?? "/";
+      res.clearCookie("oauth_return");
+      return res.redirect(returnTo);
+    } catch {
+      return res.status(502).send("Could not complete GitHub sign-in.");
     }
-    if (!isAllowed(allowlist, user.login, email)) {
-      return res.status(403).send("This GitHub account is not on the allowlist for this application.");
-    }
-    const principal = upsertHumanPrincipal("github", String(user.id), email, user.name || user.login);
-    // Re-evaluate the role on every sign-in so allowlist changes take effect.
-    setPrincipalRole(principal.id, isAllowed(adminAllowlist, user.login, email) ? "admin" : "member");
-    const {id, expiresAt} = createSession(principal.id);
-    setSessionCookie(res, id, expiresAt);
-    const returnTo = safeReturnTo(parseCookies(req).oauth_return) ?? "/";
-    res.clearCookie("oauth_return");
-    return res.redirect(returnTo);
-  } catch {
-    return res.status(502).send("Could not complete GitHub sign-in.");
-  }
-});
+  });
 
-app.post("/auth/logout", (req, res) => {
-  deleteSession(parseCookies(req).sid);
-  res.clearCookie("sid");
-  return res.status(204).end();
-});
+  app.post("/auth/logout", (req, res) => {
+    deleteSession(parseCookies(req).sid);
+    res.clearCookie("sid");
+    return res.status(204).end();
+  });
+}
 
+// `authMode` lets the client hide the sign-in and token affordances when there is
+// nothing to sign in to.
 app.get("/api/me", (req, res) => {
   const principal = sessionPrincipal(req);
-  res.json({user: principal ? {id: principal.id, name: principal.displayName} : null});
+  res.json({user: principal ? {id: principal.id, name: principal.displayName} : null, authMode});
 });
 
 // Test-only sign-in seam, enabled only when AUTH_DEV_LOGIN=1 (set by the e2e
@@ -872,7 +897,17 @@ websocketServer.on("connection", (socket, request) => {
   // socket that may not read the document is refused and closed, matching the 404
   // the HTTP routes return. Edits are stamped with the principal, never a
   // client-supplied id.
-  const principal = getSessionPrincipal(parseCookieHeader(request.headers.cookie).sid);
+  if (authDisabled) {
+    const reason = loopbackRejection({origin: request.headers.origin, host: request.headers.host}, port);
+    if (reason) {
+      noteRejection(reason);
+      socket.send(JSON.stringify({type: "error", error: "refused: this server accepts local requests only"}));
+      return socket.close();
+    }
+  }
+  const principal = authDisabled
+    ? openModePrincipal(request.headers)
+    : getSessionPrincipal(parseCookieHeader(request.headers.cookie).sid);
   const requestedId = new URL(request.url ?? "/ws", "http://localhost").searchParams.get("doc");
   const documentId = requestedId && /^\d+$/.test(requestedId) ? Number(requestedId) : NaN;
   const meta = Number.isNaN(documentId) ? undefined : getDocument(documentId);
@@ -966,6 +1001,6 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 app.get("/{*splat}", (_req, res) => res.sendFile(path.join(publicDir, "index.html")));
 
-server.listen(port, () => {
-  console.log(`AI collaborative editor running at http://localhost:${port}`);
+server.listen(port, bindHost, () => {
+  console.log(`AI collaborative editor running at http://localhost:${port} (auth: ${authMode})`);
 });

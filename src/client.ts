@@ -196,6 +196,9 @@ $("signin-screen-button").addEventListener("click", signIn);
 // --- Human auth (sign-in state) -------------------------------------------
 type Me = {id: number; name: string} | null;
 let currentUser: Me = null;
+// "none" when the server runs without authentication (a local single-user
+// install): there is nobody to sign in or out as, so those affordances are hidden.
+let authMode: "github" | "none" = "github";
 
 // id → display name for every principal, so comment authors render as names. Loaded
 // once signed in; workspace-wide visibility is intentional for this closed circle.
@@ -211,7 +214,9 @@ const authorName = (id: number) => principalNames.get(id) ?? `#${id}`;
 
 async function refreshAuth() {
   try {
-    currentUser = (await directoryRequest<{user: Me}>("/api/me")).user;
+    const me = await directoryRequest<{user: Me; authMode?: "github" | "none"}>("/api/me");
+    currentUser = me.user;
+    authMode = me.authMode ?? "github";
   } catch {
     currentUser = null;
   }
@@ -248,6 +253,7 @@ function renderAuthStatus() {
     const name = document.createElement("span");
     name.className = "auth-user";
     name.textContent = currentUser.name;
+    if (authMode === "none") return void host.append(name);
     const out = document.createElement("button");
     out.type = "button";
     out.className = "auth-button";

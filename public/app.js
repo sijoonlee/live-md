@@ -225726,6 +225726,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   $6("directory-signin").addEventListener("click", signIn);
   $6("signin-screen-button").addEventListener("click", signIn);
   var currentUser = null;
+  var authMode = "github";
   var principalNames = /* @__PURE__ */ new Map();
   async function loadPrincipalNames() {
     try {
@@ -225738,7 +225739,9 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   var authorName = (id39) => principalNames.get(id39) ?? `#${id39}`;
   async function refreshAuth() {
     try {
-      currentUser = (await directoryRequest("/api/me")).user;
+      const me3 = await directoryRequest("/api/me");
+      currentUser = me3.user;
+      authMode = me3.authMode ?? "github";
     } catch {
       currentUser = null;
     }
@@ -225768,6 +225771,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
       const name2 = document.createElement("span");
       name2.className = "auth-user";
       name2.textContent = currentUser.name;
+      if (authMode === "none") return void host.append(name2);
       const out = document.createElement("button");
       out.type = "button";
       out.className = "auth-button";
