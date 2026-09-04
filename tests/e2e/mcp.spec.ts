@@ -141,3 +141,34 @@ test("a missing anchor is reported as a recoverable error, not a silent no-op", 
   expect(after.text).toContain("some content");
   expect(after.text).not.toContain("replacement");
 });
+
+// The same caret guarantee as for a second browser, but exercised through the MCP
+// path an agent actually uses: a person parks the caret mid-document, the agent
+// inserts well above it, and the person's next keystroke must still land where they
+// left off. Mid-document deliberately — a caret at the very end survives even a
+// whole-document replace, so testing there proves nothing.
+test("an agent's MCP edit above the caret does not move it", async ({page, request}) => {
+  const {documentId, token} = await setup(page, `mcp-caret-${Date.now()}`);
+  await page.goto(`/documents/${documentId}`);
+  const editor = page.getByTestId("document").locator(".cm-content");
+  await expect(editor).toBeEditable();
+
+  await editor.fill("alpha\nbravo\ncharlie\ndelta\necho");
+  await expect(editor).toContainText("echo");
+
+  // Caret parked at the end of a middle line.
+  await page.getByText("charlie").click();
+  await page.keyboard.press("End");
+
+  const edited = await callTool(request, token, "edit_document", {
+    documentId,
+    oldString: "alpha",
+    newString: "AGENT-INSERTED-LINE-ONE\nAGENT-INSERTED-LINE-TWO\nalpha",
+  });
+  expect(edited.isError).toBe(false);
+  await expect(editor).toContainText("AGENT-INSERTED-LINE-TWO");
+
+  await page.keyboard.type("!");
+  await expect(editor).toContainText("charlie!");
+  await expect(editor).not.toContainText("!AGENT-INSERTED-LINE-ONE");
+});
