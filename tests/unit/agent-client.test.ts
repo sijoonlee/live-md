@@ -81,19 +81,19 @@ test("AgentClient retries and propagates a final failure", async () => {
   await assert.rejects(() => failingClient.insert(0, "fail"), /temporary network failure/);
 });
 
-test("AgentClient sends its bearer token on requests", async () => {
+test("AgentClient names itself on every request, for attribution", async () => {
   const seen: (string | null)[] = [];
   const serverDoc = new Y.Doc();
   const base = makeFetch(serverDoc);
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    seen.push((init?.headers as Record<string, string> | undefined)?.authorization ?? null);
+    seen.push((init?.headers as Record<string, string> | undefined)?.["x-agent-id"] ?? null);
     return base.fetch(input, init);
   };
-  const client = new AgentClient({agentId: "tok-agent", token: "agt_secret", documentId: 1, fetch});
+  const client = new AgentClient({agentId: "tok-agent", documentId: 1, fetch});
   await client.load();
   await client.insert(0, "hi");
   assert.ok(seen.length > 0);
-  assert.ok(seen.every((value) => value === "Bearer agt_secret"));
+  assert.ok(seen.every((value) => value === "tok-agent"));
 });
 
 test("AgentClient with a documentId targets the id-keyed document API", async () => {
@@ -174,14 +174,13 @@ test("AgentClient lists and deletes files", async () => {
   assert.deepEqual(calls, ["GET /api/documents/1/files", "DELETE /api/files/9"]);
 });
 
-// A mock whose /state carries a principalId, so comment authoring can attribute.
-const makeCommentFetch = (serverDoc: Y.Doc, principalId: number | null = 42) => {
+const makeCommentFetch = (serverDoc: Y.Doc) => {
   const base = makeFetch(serverDoc);
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
     if (path.endsWith("/state")) {
       return new Response(
-        JSON.stringify({update: encode(Y.encodeStateAsUpdate(serverDoc)), principalId}),
+        JSON.stringify({update: encode(Y.encodeStateAsUpdate(serverDoc))}),
         {status: 200},
       );
     }
@@ -201,7 +200,7 @@ test("AgentClient adds, reads, replies to, updates, resolves, and deletes commen
   const afterAdd = client.listComments();
   assert.equal(afterAdd.length, 1);
   assert.equal(afterAdd[0].id, rootId);
-  assert.equal(afterAdd[0].authorId, 42);
+  assert.equal(afterAdd[0].author, "commenter");
   assert.equal(afterAdd[0].line, 2); // anchored to line 2
   assert.equal(afterAdd[0].anchor !== null, true);
 
@@ -229,40 +228,39 @@ test("AgentClient adds, reads, replies to, updates, resolves, and deletes commen
   assert.equal(client.listComments().length, 1);
 });
 
-test("AgentClient comment writes ride the update pipeline with the agent's token", async () => {
+test("AgentClient comment writes ride the update pipeline", async () => {
   const seen: (string | null)[] = [];
   const serverDoc = new Y.Doc();
   serverDoc.getText("content").insert(0, "hi");
-  const base = makeCommentFetch(serverDoc, 7);
+  const base = makeCommentFetch(serverDoc);
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     if (new URL(String(input)).pathname.endsWith("/updates")) {
-      seen.push((init?.headers as Record<string, string> | undefined)?.authorization ?? null);
+      seen.push((init?.headers as Record<string, string> | undefined)?.["x-agent-id"] ?? null);
     }
     return base.fetch(input, init);
   };
-  const client = new AgentClient({agentId: "tok-commenter", token: "agt_x", documentId: 1, fetch});
+  const client = new AgentClient({agentId: "tok-commenter", documentId: 1, fetch});
   await client.load();
   await client.addComment({line: 1, body: "note"});
   assert.ok(seen.length > 0);
-  assert.ok(seen.every((v) => v === "Bearer agt_x"));
+  assert.ok(seen.every((v) => v === "tok-commenter"));
 });
 
-test("AgentClient refuses to author a comment without a principal id", async () => {
+test("AgentClient attributes comments to its own agentId", async () => {
   const serverDoc = new Y.Doc();
   serverDoc.getText("content").insert(0, "hi");
-  const {fetch} = makeCommentFetch(serverDoc, null); // no principal surfaced
+  const {fetch} = makeCommentFetch(serverDoc);
   const client = new AgentClient({agentId: "anon-commenter", documentId: 1, fetch});
   await client.load();
-  await assert.rejects(() => client.addComment({line: 1, body: "note"}), /principal id/);
-  // Reading comments needs no principal.
-  assert.deepEqual(client.listComments(), []);
+  await client.addComment({line: 1, body: "note"});
+  assert.equal(client.listComments()[0].author, "anon-commenter");
 });
 
 test("AgentClient exports its document, returning bytes + filename + warnings", async () => {
   const seen: {path: string; auth?: string}[] = [];
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    seen.push({path: url.pathname, auth: (init?.headers as Record<string, string> | undefined)?.authorization});
+    seen.push({path: url.pathname, agent: (init?.headers as Record<string, string> | undefined)?.["x-agent-id"]});
     if (url.pathname === "/api/documents/5/export") {
       return new Response("# Title\n\nbody", {status: 200, headers: {
         "content-type": "text/markdown; charset=utf-8",
@@ -272,13 +270,13 @@ test("AgentClient exports its document, returning bytes + filename + warnings", 
     }
     return new Response(JSON.stringify({error: "not found"}), {status: 404});
   };
-  const client = new AgentClient({agentId: "export-agent", token: "agt_e", documentId: 5, fetch});
+  const client = new AgentClient({agentId: "export-agent", documentId: 5, fetch});
   const result = await client.exportDocument();
   assert.equal(Buffer.from(result.bytes).toString("utf8"), "# Title\n\nbody");
   assert.equal(result.filename, "Title.md");
   assert.equal(result.contentType, "text/markdown; charset=utf-8");
   assert.deepEqual(result.warnings, ["1 unreferenced attachment(s) were not included"]);
-  assert.deepEqual(seen, [{path: "/api/documents/5/export", auth: "Bearer agt_e"}]);
+  assert.deepEqual(seen, [{path: "/api/documents/5/export", agent: "export-agent"}]);
 });
 
 test("AgentClient imports Markdown text as a new document", async () => {

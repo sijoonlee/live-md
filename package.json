@@ -16,7 +16,6 @@
     "build:client": "esbuild src/client.ts --bundle --format=iife --outfile=public/app.js",
     "build:extension": "esbuild vscode-extension/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=vscode-extension/dist/extension.js",
     "start": "node dist/server.js",
-    "mint-token": "tsx src/mint-token.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p vscode-extension",
     "test:e2e": "playwright test",
     "test:sdk": "tsx --test tests/unit/agent-client.test.ts",

@@ -2,7 +2,6 @@ import express from "express";
 import {z} from "zod";
 import {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
 import {StreamableHTTPServerTransport} from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type {Principal} from "./auth.js";
 import {
   ToolError,
   addCommentTool,
@@ -22,10 +21,8 @@ import {
 // Streamable HTTP on the existing Express app rather than a stdio child process:
 // one server, one port, nothing extra to supervise.
 
-// Stateless: every POST builds its own server and transport, so the principal is
-// resolved per request and nothing is cached across calls that a change in
-// sharing should invalidate. MCP sessions would buy resumable SSE we have no use
-// for here, at the price of that staleness.
+// Stateless: every POST builds its own server and transport. MCP sessions would buy
+// resumable SSE we have no use for here, at the price of state to keep in step.
 const STATELESS = {sessionIdGenerator: undefined, enableJsonResponse: true} as const;
 
 // Tool results are JSON in a text block: the shape every MCP client renders, and
@@ -54,7 +51,7 @@ const run = <T>(work: () => T) => {
 
 const documentId = z.number().int().positive().describe("id of the document, from list_documents");
 
-export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate): McpServer => {
+export const createMcpServer = (author: string, acceptUpdate: AcceptUpdate): McpServer => {
   const server = new McpServer(
     {name: "live-md", version: "1.0.0"},
     {instructions:
@@ -72,7 +69,7 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
       inputSchema: {},
       annotations: {readOnlyHint: true},
     },
-    async () => run(() => listDocumentsTool(principal)),
+    async () => run(() => listDocumentsTool()),
   );
 
   server.registerTool(
@@ -85,7 +82,7 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
       inputSchema: {documentId},
       annotations: {readOnlyHint: true},
     },
-    async ({documentId: id}) => run(() => readDocumentTool(principal, id)),
+    async ({documentId: id}) => run(() => readDocumentTool(id)),
   );
 
   server.registerTool(
@@ -108,7 +105,7 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
           .describe("version from read_document; the edit is refused if the document has changed since"),
       },
     },
-    async (args) => run(() => editDocumentTool(principal, acceptUpdate, args)),
+    async (args) => run(() => editDocumentTool(author, acceptUpdate, args)),
   );
 
   server.registerTool(
@@ -118,7 +115,7 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
       description: "Append Markdown to the end of a document. Prefer this over edit_document when adding a new section.",
       inputSchema: {documentId, content: z.string().min(1).describe("Markdown to append")},
     },
-    async (args) => run(() => appendDocumentTool(principal, acceptUpdate, args)),
+    async (args) => run(() => appendDocumentTool(author, acceptUpdate, args)),
   );
 
   server.registerTool(
@@ -134,7 +131,7 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
         body: z.string().min(1).describe("the comment"),
       },
     },
-    async (args) => run(() => addCommentTool(principal, acceptUpdate, args)),
+    async (args) => run(() => addCommentTool(author, acceptUpdate, args)),
   );
 
   server.registerTool(
@@ -145,22 +142,18 @@ export const createMcpServer = (principal: Principal, acceptUpdate: AcceptUpdate
       inputSchema: {documentId},
       annotations: {readOnlyHint: true},
     },
-    async ({documentId: id}) => run(() => listCommentsTool(principal, id)),
+    async ({documentId: id}) => run(() => listCommentsTool(id)),
   );
 
   return server;
 };
 
-// Express handler for POST /api/mcp. The caller has already been authenticated by
-// the /api guard, so `principal` is whoever the request resolved to and every tool
-// re-checks access per document.
+// Express handler for POST /api/mcp. There is nothing to authenticate: the author
+// is a label the agent supplies for the history log.
 export const mcpHandler =
-  (acceptUpdate: AcceptUpdate, principalFor: (req: express.Request) => Principal | undefined) =>
+  (acceptUpdate: AcceptUpdate, authorFor: (req: express.Request) => string) =>
   async (req: express.Request, res: express.Response) => {
-    const principal = principalFor(req);
-    if (!principal) return res.status(401).json({error: "authentication required"});
-
-    const server = createMcpServer(principal, acceptUpdate);
+    const server = createMcpServer(authorFor(req), acceptUpdate);
     const transport = new StreamableHTTPServerTransport(STATELESS);
     // Stateless mode builds both per request, so both are disposed with it —
     // otherwise each call would leak a server and its transport.

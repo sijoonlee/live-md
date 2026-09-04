@@ -21,7 +21,6 @@ database.exec(`
     id            TEXT PRIMARY KEY,
     document_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     revision      INTEGER NOT NULL,
-    author_id     INTEGER,
     author_label  TEXT,
     metadata      TEXT,
     created_at    TEXT NOT NULL
@@ -33,14 +32,13 @@ export type ActivityRecord = {
   id: string;
   documentId: number;
   revision: number;
-  authorId: number | null;
   authorLabel: string | null;
   metadata?: Record<string, unknown>;
   createdAt: string;
 };
 
 const insertActivity = database.prepare(
-  "INSERT INTO document_activity (id, document_id, revision, author_id, author_label, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "INSERT INTO document_activity (id, document_id, revision, author_label, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 );
 // Prune to the newest MAX_ACTIVITY_PER_DOCUMENT rows for a document. uuid v4 ids are
 // not time-ordered, so rank by rowid (insertion order) rather than id.
@@ -64,18 +62,16 @@ const toRecord = (row: Record<string, unknown>): ActivityRecord => ({
   id: row.id as string,
   documentId: row.document_id as number,
   revision: row.revision as number,
-  authorId: (row.author_id as number | null) ?? null,
   authorLabel: (row.author_label as string | null) ?? null,
   metadata: parseMetadata(row.metadata),
   createdAt: row.created_at as string,
 });
 
-// Record one accepted update and return the minted, durable update id. Author is the
-// server-set principal (id + label), never client-supplied.
+// Record one accepted update and return the minted, durable update id. The author
+// label is set by the server from the request, not taken from the update body.
 export const recordActivity = (entry: {
   documentId: number;
   revision: number;
-  authorId?: number | null;
   authorLabel?: string | null;
   metadata?: Record<string, unknown>;
   createdAt?: string;
@@ -85,7 +81,6 @@ export const recordActivity = (entry: {
     id,
     entry.documentId,
     entry.revision,
-    entry.authorId ?? null,
     entry.authorLabel ?? null,
     entry.metadata ? JSON.stringify(entry.metadata) : null,
     entry.createdAt ?? new Date().toISOString(),

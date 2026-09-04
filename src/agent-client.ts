@@ -12,7 +12,6 @@ import {
 export type AgentClientOptions = {
   baseUrl?: string;
   agentId: string;
-  token?: string;               // Bearer token that authenticates this agent
   documentId: number;           // The document this client reads/edits (required)
   retries?: number;
   fetch?: typeof globalThis.fetch;
@@ -50,7 +49,6 @@ export class AgentClient {
   readonly text = this.doc.getText("content");
   private readonly baseUrl: string;
   private readonly agentId: string;
-  private readonly token?: string;
   // Base path for this client's document: the id-keyed API `/api/documents/:id`.
   private readonly documentBase: string;
   private readonly retries: number;
@@ -58,9 +56,6 @@ export class AgentClient {
   private submission = Promise.resolve();
   private latestSubmission = Promise.resolve();
   private loaded = false;
-  // This agent's own principal id, learned from the state response on load(). Used to
-  // stamp authorId on comments it writes (a bearer-token caller has no session /api/me).
-  private principalId: number | null = null;
 
   constructor(options: AgentClientOptions) {
     if (!/^[A-Za-z0-9._:-]{1,100}$/.test(options.agentId)) {
@@ -71,7 +66,6 @@ export class AgentClient {
     }
     this.baseUrl = (options.baseUrl ?? "http://localhost:3000").replace(/\/$/, "");
     this.agentId = options.agentId;
-    this.token = options.token;
     this.documentBase = `/api/documents/${options.documentId}`;
     this.retries = options.retries ?? 3;
     this.requestFetch = options.fetch ?? globalThis.fetch;
@@ -88,7 +82,6 @@ export class AgentClient {
   async load() {
     const response = await this.request(`${this.documentBase}/state`, {method: "GET"});
     Y.applyUpdate(this.doc, decode(response.update), "remote");
-    this.principalId = typeof response.principalId === "number" ? response.principalId : null;
     this.loaded = true;
     return this.text.toString();
   }
@@ -143,11 +136,10 @@ export class AgentClient {
   /** Add a root comment anchored to the start of a 1-based line. Returns the new id. */
   async addComment({line, body}: {line: number; body: string}) {
     this.ensureLoaded();
-    const authorId = this.requireAuthor();
     const charIndex = this.lineStartIndex(line);
     let id = "";
     this.doc.transact(() => {
-      id = addRootComment(this.doc, {charIndex, authorId, body});
+      id = addRootComment(this.doc, {charIndex, author: this.agentId, body});
     }, "agent-comment");
     await this.latestSubmission;
     return id;
@@ -156,10 +148,9 @@ export class AgentClient {
   /** Reply to any existing comment (root or reply). Returns the new id. */
   async replyToComment(parentId: string, body: string) {
     this.ensureLoaded();
-    const authorId = this.requireAuthor();
     let id = "";
     this.doc.transact(() => {
-      id = addReply(this.doc, {parentId, authorId, body});
+      id = addReply(this.doc, {parentId, author: this.agentId, body});
     }, "agent-comment");
     await this.latestSubmission;
     return id;
@@ -230,10 +221,9 @@ export class AgentClient {
    * or an `application/zip` `.zip` bundle (`<name>.md` + `assets/…`) when the document
    * references its attachments. `warnings` carries any export notes (broken/unreferenced
    * files). Pass `{ format: "md" }` to force plain Markdown with app-relative links.
-   * Requires read access.
-   */
+     */
   async exportDocument(options: {format?: "md"} = {}): Promise<ExportResult> {
-    const headers = this.token ? {authorization: `Bearer ${this.token}`} : undefined;
+    const headers = {"x-agent-id": this.agentId};
     const query = options.format ? `?format=${options.format}` : "";
     const response = await this.requestFetch(`${this.baseUrl}${this.documentBase}/export${query}`, {headers});
     if (!response.ok) throw new Error(`export failed: ${response.status}`);
@@ -340,11 +330,9 @@ export class AgentClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<any> {
-    // Authenticate every request with the agent's bearer token. The server derives
-    // identity from this token, so write endpoints reject requests without it.
-    const headers = this.token
-      ? {...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${this.token}`}
-      : init.headers;
+    // Name this agent on every request. Nothing verifies it — there is no
+    // authentication in this build — it is what the activity log records as the author.
+    const headers = {...(init.headers as Record<string, string> | undefined), "x-agent-id": this.agentId};
     const requestInit = {...init, headers};
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.retries; attempt += 1) {
@@ -363,15 +351,6 @@ export class AgentClient {
 
   private ensureLoaded() {
     if (!this.loaded) throw new Error("Call load() before editing");
-  }
-
-  // Comments are stamped with the caller's principal id (learned on load). Without it
-  // the server never associated a principal with this client, so we can't attribute.
-  private requireAuthor() {
-    if (this.principalId === null) {
-      throw new Error("cannot author a comment: no principal id (is this client authenticated?)");
-    }
-    return this.principalId;
   }
 
   // Character index at the start of a 1-based line, clamped to the document.

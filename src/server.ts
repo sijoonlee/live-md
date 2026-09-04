@@ -18,9 +18,6 @@ import {
   moveFolder,
   renameDocument,
   renameFolder,
-  listShares,
-  removeShare,
-  setShare,
   type DirectoryDocument,
 } from "./directory.js";
 import {MAX_DOCUMENT_CHARS, type LiveDocument} from "./document.js";
@@ -28,13 +25,9 @@ import {createZip, readZip, type ZipEntry} from "./zip.js";
 import {findReferencedFileIds, rewriteAssetsToReferences, rewriteReferencesToAssets} from "./markdown-assets.js";
 import {listActivity, recordActivity} from "./activity.js";
 import {evictIdle, getLiveDocument, liveDocumentIds, snapshotAll} from "./document-registry.js";
-import {can, type Action} from "./authz.js";
-import {getAgentByName, getPrincipal, listPrincipals, listTokens, mintAgentToken, revokeToken, setPrincipalRole, verifyToken, type Principal} from "./auth.js";
-import {createSession, deleteSession, getSessionPrincipal, upsertHumanPrincipal} from "./human-auth.js";
-import {authDisabled, authMode, localPrincipal, openModePrincipal} from "./auth-mode.js";
+import {authorFrom, LOCAL_AUTHOR} from "./author.js";
 import {loopbackRejection, noteRejection, resolveBindHost} from "./loopback-guard.js";
 import {mcpHandler} from "./mcp.js";
-import {isAllowed, parseAllowlist} from "./allowlist.js";
 import {createRateLimiter} from "./rate-limit.js";
 import {
   MAX_FILE_BYTES,
@@ -57,16 +50,16 @@ const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../pu
 
 app.use(express.json({limit: "2mb"}));
 
-// With authentication off, keep the open server from being driven by a web page
-// the user happens to be visiting, or reached under a rebound hostname.
-if (authDisabled) {
-  app.use((req, res, next) => {
-    const reason = loopbackRejection({origin: req.headers.origin, host: req.headers.host}, port);
-    if (!reason) return next();
-    noteRejection(reason);
-    return res.status(403).json({error: "refused: this server accepts local requests only"});
-  });
-}
+// The only protection this build has. There is no authentication, so anything that
+// can reach the port can read and rewrite every document — keep it to requests that
+// actually originated locally, and not from a web page the user happens to be
+// visiting or a hostname rebound to 127.0.0.1.
+app.use((req, res, next) => {
+  const reason = loopbackRejection({origin: req.headers.origin, host: req.headers.host}, port);
+  if (!reason) return next();
+  noteRejection(reason);
+  return res.status(403).json({error: "refused: this server accepts local requests only"});
+});
 app.use(express.static(publicDir));
 
 const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -76,70 +69,7 @@ const fromBase64 = (value: unknown) => {
 };
 const integerId = (value: string) => /^\d+$/.test(value) ? Number(value) : NaN;
 
-// --- Human auth (GitHub OAuth + opaque session cookie) --------------------
-const githubClientId = process.env.GITHUB_CLIENT_ID ?? "";
-const githubClientSecret = process.env.GITHUB_CLIENT_SECRET ?? "";
-const githubCallbackUrl = process.env.GITHUB_CALLBACK_URL ?? `http://localhost:${port}/auth/callback`;
-const allowlist = parseAllowlist(process.env.ALLOWED_GITHUB);
-// Admins are bootstrapped from an env allowlist keyed on a trusted attribute
-// (GitHub login or a verified email), so a spoofed unverified email can't escalate.
-// Empty → no admins (isAllowed fails closed).
-const adminAllowlist = parseAllowlist(process.env.ADMIN_GITHUB);
-const secureCookies = process.env.NODE_ENV === "production";
 
-const parseCookieHeader = (header: string | undefined): Record<string, string> =>
-  Object.fromEntries(
-    (header ?? "")
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const eq = part.indexOf("=");
-        return [part.slice(0, eq), decodeURIComponent(part.slice(eq + 1))];
-      }),
-  );
-const parseCookies = (req: express.Request): Record<string, string> => parseCookieHeader(req.headers.cookie);
-
-const setSessionCookie = (res: express.Response, id: string, expiresAt: string) =>
-  res.cookie("sid", id, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, expires: new Date(expiresAt)});
-
-// In open mode every caller is the single local user (or the agent it declares
-// itself to be); otherwise identity comes from the session cookie.
-const sessionPrincipal = (req: express.Request): Principal | undefined =>
-  authDisabled ? openModePrincipal(req.headers) : getSessionPrincipal(parseCookies(req).sid);
-
-// Require a signed-in human. On failure writes a 401 and returns undefined.
-const authedHuman = (req: express.Request, res: express.Response): Principal | undefined => {
-  if (authDisabled) return localPrincipal();
-  const principal = sessionPrincipal(req);
-  if (!principal || principal.kind !== "human") {
-    res.status(401).json({error: "sign in to perform this action"});
-    return undefined;
-  }
-  return principal;
-};
-
-// A request is authenticated if it carries a valid agent bearer token OR a human
-// session cookie. This is the baseline for the whole /api surface.
-const principalFromRequest = (req: express.Request): Principal | undefined => {
-  const match = /^Bearer (.+)$/.exec(req.header("authorization") ?? "");
-  return (match ? verifyToken(match[1]) : undefined) ?? sessionPrincipal(req);
-};
-
-// Resolve the agent principal from the request's bearer token. On failure it
-// writes a 401 and returns undefined, so callers do `if (!principal) return;`.
-// This is what makes identity server-set: the authoring identity comes from the
-// verified token, never from a client-supplied agentId.
-const authedPrincipal = (req: express.Request, res: express.Response): Principal | undefined => {
-  if (authDisabled) return openModePrincipal(req.headers);
-  const match = /^Bearer (.+)$/.exec(req.header("authorization") ?? "");
-  const principal = match ? verifyToken(match[1]) : undefined;
-  if (!principal) {
-    res.status(401).json({error: "a valid agent token is required (Authorization: Bearer <token>)"});
-    return undefined;
-  }
-  return principal;
-};
 const directoryName = (value: unknown) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= 200 ? value.trim() : undefined;
 
 // A WebSocket "room" per document: a socket only receives updates for the document
@@ -175,12 +105,11 @@ const acceptUpdate = (
   update: Uint8Array,
   metadata?: Record<string, unknown>,
   requestId?: string,
-  authorId?: number,
 ) => {
   const nextRevision = live.applyUpdate(update, agentId, metadata, requestId);
   // Durable activity record + server-minted update id (M11/M12). Author is the
   // server-set principal, never client-supplied. Separate from the compactable CRDT log.
-  const activityId = recordActivity({documentId, revision: nextRevision, authorId: authorId ?? null, authorLabel: agentId, metadata});
+  const activityId = recordActivity({documentId, revision: nextRevision, authorLabel: agentId, metadata});
   broadcastToDocument(documentId, {
     type: "document_update",
     revision: nextRevision,
@@ -191,19 +120,12 @@ const acceptUpdate = (
   return nextRevision;
 };
 
-// Resolve a document by id, enforcing the authorization choke point. Returns 404
-// (never 403) both when the document is missing and when access is denied, so
-// enumerable ids do not confirm which documents exist. Callers do
-// `const doc = loadDocument(...); if (!doc) return;`.
+// Resolve a document by id. Still 404s for a missing document, so callers keep the
+// shape `const doc = loadDocument(...); if (!doc) return;`.
 type ResolvedDocument = {id: number; meta: DirectoryDocument; live: LiveDocument};
-const loadDocument = (
-  id: number,
-  principal: Principal | undefined,
-  res: express.Response,
-  action: Action,
-): ResolvedDocument | undefined => {
+const loadDocument = (id: number, res: express.Response): ResolvedDocument | undefined => {
   const meta = getDocument(id);
-  if (!meta || !can(principal, action, meta)) {
+  if (!meta) {
     res.status(404).json({error: "document not found"});
     return undefined;
   }
@@ -218,32 +140,22 @@ const parseDocumentId = (raw: string, res: express.Response): number | undefined
   return id;
 };
 
-// Lock down the whole /api surface: every route requires authentication (a human
-// session or an agent token) except the public sign-in status. Routes may enforce a
-// stricter kind (e.g. token management requires a human) on top of this.
-app.use("/api", (req, res, next) => {
-  if (req.path === "/me") return next();
-  if (!principalFromRequest(req)) return res.status(401).json({error: "authentication required"});
-  return next();
-});
 
 // --- MCP -----------------------------------------------------------------
 // How an agent living outside the browser (Claude Code in a terminal) works on the
-// same document a person has open. Authentication is whatever the rest of /api
-// uses — an agent bearer token, or nothing at all under AUTH_MODE=none — and each
-// tool re-checks access per document, so this adds a transport, not a privilege.
-app.post("/api/mcp", mcpHandler(acceptUpdate, principalFromRequest));
+// same document a person has open. It names itself with X-Agent-Id purely so the
+// history log can attribute the edit.
+app.post("/api/mcp", mcpHandler(acceptUpdate, (req) => authorFrom(req.headers)));
 
 // The MCP client config for this server, so connecting an agent is a copy-paste
-// rather than a documentation exercise. Human-session only: it may carry a token.
-app.get("/api/mcp/config", (req, res) => {
-  if (!authedHuman(req, res)) return;
+// rather than a documentation exercise.
+app.get("/api/mcp/config", (_req, res) => {
   res.json({
     mcpServers: {
       "live-md": {
         type: "http",
         url: `http://localhost:${port}/api/mcp`,
-        ...(authDisabled ? {headers: {"X-Agent-Id": "claude-code"}} : {headers: {Authorization: "Bearer <agent token>"}}),
+        headers: {"X-Agent-Id": "claude-code"},
       },
     },
   });
@@ -254,28 +166,26 @@ app.get("/api/mcp/config", (req, res) => {
 // There is no un-parameterized alias: every request names its document, and access
 // is decided per document by can() (404 for no access).
 
-const sendDocumentState = (id: number, principal: Principal | undefined, res: express.Response) => {
-  const doc = loadDocument(id, principal, res, "read");
+const sendDocumentState = (id: number, res: express.Response) => {
+  const doc = loadDocument(id, res);
   if (!doc) return;
   // documentId + name let the client title the document without a second request;
   // canEdit drives editor editability; canManage reveals the Share affordance.
   res.json({
     documentId: doc.id,
     name: doc.meta.name,
-    ownerId: doc.meta.ownerId,
-    // The requesting principal's own id, so a bearer-token caller (whose /api/me is
-    // null) can stamp authorId on comments it writes. Attribution stays client-set.
-    principalId: principal?.id ?? null,
-    canEdit: can(principal, "write", doc.meta),
-    canManage: can(principal, "manage", doc.meta),
+      // Everyone who reaches this server may edit. The flags stay in the payload so the
+    // browser client is identical between this build and the multi-user one.
+    canEdit: true,
+    canManage: true,
     update: toBase64(doc.live.encodeState()),
     stateVector: toBase64(doc.live.encodeStateVector()),
     ...doc.live.getMetadata(),
   });
 };
 
-const syncDocument = (id: number, principal: Principal | undefined, req: express.Request, res: express.Response) => {
-  const doc = loadDocument(id, principal, res, "read");
+const syncDocument = (id: number, req: express.Request, res: express.Response) => {
+  const doc = loadDocument(id, res);
   if (!doc) return;
   try {
     const stateVector = fromBase64(req.body?.stateVector);
@@ -285,23 +195,23 @@ const syncDocument = (id: number, principal: Principal | undefined, req: express
   }
 };
 
-const sendDocumentUpdates = (id: number, principal: Principal | undefined, res: express.Response) => {
-  const doc = loadDocument(id, principal, res, "read");
+const sendDocumentUpdates = (id: number, res: express.Response) => {
+  const doc = loadDocument(id, res);
   if (!doc) return;
   res.json({updates: doc.live.getUpdates(), revision: doc.live.getRevision()});
 };
 
 app.get("/api/documents/:documentId/state", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) sendDocumentState(id, principalFromRequest(req), res);
+  if (id !== undefined) sendDocumentState(id, res);
 });
 app.post("/api/documents/:documentId/sync", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) syncDocument(id, principalFromRequest(req), req, res);
+  if (id !== undefined) syncDocument(id, req, res);
 });
 app.get("/api/documents/:documentId/updates", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) sendDocumentUpdates(id, principalFromRequest(req), res);
+  if (id !== undefined) sendDocumentUpdates(id, res);
 });
 
 // Durable activity/history for a document (M12): a newest-first, cursor-paged feed of
@@ -311,35 +221,20 @@ app.get("/api/documents/:documentId/updates", (req, res) => {
 app.get("/api/documents/:documentId/history", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "read");
+  const doc = loadDocument(id, res);
   if (!doc) return;
   const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
   const before = typeof req.query.before === "string" ? req.query.before : undefined;
   const entries = listActivity(id, {limit: Number.isFinite(limit) ? limit : undefined, before}).map((entry) => {
-    // Resolve the author to its CURRENT principal (renamed principals show their new
-    // name); fall back to the stored label if the principal is gone.
-    const principal = entry.authorId !== null ? getPrincipal(entry.authorId) : undefined;
     return {
       id: entry.id,
       revision: entry.revision,
-      author: {
-        id: entry.authorId,
-        kind: principal?.kind ?? null,
-        displayName: principal?.displayName ?? entry.authorLabel ?? `#${entry.authorId}`,
-      },
+      author: entry.authorLabel ?? "unknown",
       metadata: entry.metadata,
       createdAt: entry.createdAt,
     };
   });
   res.json({entries});
-});
-
-// All principals (humans + agents) as id/kind/displayName, for resolving the authorId
-// on comments (and similar UI labels) to a name. Workspace-wide visibility is
-// intentional for this closed, allowlisted circle (see the trust model); any
-// authenticated caller may read it (the global /api guard already requires that).
-app.get("/api/principals", (_req, res) => {
-  res.json({principals: listPrincipals().map((p) => ({id: p.id, kind: p.kind, displayName: p.displayName}))});
 });
 
 app.get("/api/folders", (req, res) => {
@@ -375,9 +270,7 @@ app.get("/api/folders/:folderId/documents", (req, res) => {
   const folderId = integerId(req.params.folderId);
   if (Number.isNaN(folderId)) return res.status(400).json({error: "folderId must be an integer"});
   // Scoped listing: only documents the caller may read (their own, shared with
-  // them, or the ownerless default) — never leak other principals' document names.
-  const principal = principalFromRequest(req);
-  const documents = listDocuments(folderId).filter((doc) => can(principal, "read", doc));
+  const documents = listDocuments(folderId);
   return res.json({documents});
 });
 
@@ -385,16 +278,14 @@ app.post("/api/folders/:folderId/documents", (req, res) => {
   const folderId = integerId(req.params.folderId);
   const name = directoryName(req.body?.name);
   if (Number.isNaN(folderId) || !name) return res.status(400).json({error: "folderId and name are required"});
-  // The creating principal becomes the owner (the anchor for phase-3 authorization).
-  const ownerId = principalFromRequest(req)?.id ?? null;
-  try { return res.status(201).json(createDocument(folderId, name, ownerId)); } catch (error) { return res.status(409).json({error: error instanceof Error ? error.message : "document could not be created"}); }
+  try { return res.status(201).json(createDocument(folderId, name)); } catch (error) { return res.status(409).json({error: error instanceof Error ? error.message : "document could not be created"}); }
 });
 
 app.patch("/api/documents/:documentId", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
   // Renaming or moving a document is a write; only editors/owner/admin may do it.
-  if (!loadDocument(id, principalFromRequest(req), res, "write")) return;
+  if (!loadDocument(id, res)) return;
   try {
     const result = req.body?.folderId !== undefined ? moveDocument(id, Number(req.body.folderId)) : renameDocument(id, directoryName(req.body?.name) ?? "");
     if (!result) return res.status(404).json({error: "document not found"});
@@ -406,7 +297,7 @@ app.delete("/api/documents/:documentId", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
   // Deleting a document (and cascading its attachments) is owner/admin-only.
-  if (!loadDocument(id, principalFromRequest(req), res, "manage")) return;
+  if (!loadDocument(id, res)) return;
   deleteDocument(id);
   return res.status(204).end();
 });
@@ -426,7 +317,7 @@ const exportBaseName = (name: string) => {
 app.get("/api/documents/:documentId/export", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "read");
+  const doc = loadDocument(id, res);
   if (!doc) return;
   const text = doc.live.getText();
   const base = exportBaseName(doc.meta.name);
@@ -468,19 +359,18 @@ app.get("/api/documents/:documentId/export", (req, res) => {
   return res.end(Buffer.from(createZip(entries)));
 });
 
-// Per-principal write rate limit: ~20 updates/sec sustained, burst of 40.
+// Write rate limit: ~20 updates/sec sustained, burst of 40. Not a security control
+// here — just a guard against a runaway client filling the update log.
 const writeLimiter = createRateLimiter({capacity: 40, refillPerSec: 20});
 
 const submitDocumentUpdate = (id: number, req: express.Request, res: express.Response) => {
-  const principal = authedPrincipal(req, res);
-  if (!principal) return;
-  const doc = loadDocument(id, principal, res, "write");
+  const doc = loadDocument(id, res);
   if (!doc) return;
-  if (!writeLimiter.allow(String(principal.id))) {
+  // The author labels the edit; it does not authorize it.
+  const agentId = authorFrom(req.headers);
+  if (!writeLimiter.allow(agentId)) {
     return res.status(429).json({error: "rate limit exceeded; slow down"});
   }
-  // Server-set identity: the author is the token's principal, not req.body.agentId.
-  const agentId = principal.displayName;
   const requestId = typeof req.body?.requestId === "string" ? req.body.requestId : undefined;
   if (requestId && (requestId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(requestId))) {
     return res.status(400).json({error: "requestId contains invalid characters or is too long"});
@@ -495,7 +385,7 @@ const submitDocumentUpdate = (id: number, req: express.Request, res: express.Res
 
   try {
     const update = fromBase64(req.body?.update);
-    const nextRevision = acceptUpdate(doc.id, doc.live, agentId, update, req.body?.metadata, requestId, principal.id);
+    const nextRevision = acceptUpdate(doc.id, doc.live, agentId, update, req.body?.metadata, requestId);
     return res.status(202).json({...doc.live.getMetadata(), revision: nextRevision});
   } catch (error) {
     return res.status(400).json({error: error instanceof Error ? error.message : "invalid update"});
@@ -518,7 +408,7 @@ const rawFileBody = express.raw({type: () => true, limit: MAX_FILE_BYTES});
 app.post("/api/documents/:documentId/files", rawFileBody, (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "write");
+  const doc = loadDocument(id, res);
   if (!doc) return;
   const body = req.body;
   if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -564,11 +454,11 @@ const guessMimeType = (filename: string) => MIME_BY_EXT[filename.split(".").pop(
 
 // Create a document from Markdown text in a folder, seeding its content. Shared by the
 // plain-`.md` and `.zip` import paths (the zip path rewrites links before calling this).
-const createImportedDocument = (folderId: number, name: string, text: string, principal: Principal | undefined, res: express.Response) => {
+const createImportedDocument = (folderId: number, name: string, text: string, author: string, res: express.Response) => {
   try {
-    const created = createDocument(folderId, name, principal?.id ?? null);
+    const created = createDocument(folderId, name);
     if (!created) return res.status(500).json({error: "document could not be created"});
-    seedDocumentContent(created.id, getLiveDocument(created.id), text, principal?.displayName ?? "import");
+    seedDocumentContent(created.id, getLiveDocument(created.id), text, author);
     return res.status(201).json(created);
   } catch (error) {
     return res.status(409).json({error: error instanceof Error ? error.message : "document could not be created"});
@@ -585,7 +475,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
   if (Number.isNaN(folderId)) return res.status(400).json({error: "folderId must be an integer"});
   const body = req.body;
   if (!Buffer.isBuffer(body) || body.length === 0) return res.status(400).json({error: "request body must be the file bytes"});
-  const principal = principalFromRequest(req);
+  const author = authorFrom(req.headers);
   const queryName = typeof req.query.filename === "string" ? req.query.filename : undefined;
   const isZip = body.length >= 4 && body[0] === 0x50 && body[1] === 0x4b && body[2] === 0x03 && body[3] === 0x04;
 
@@ -593,7 +483,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
     const text = body.toString("utf8");
     if (text.includes("\u0000")) return res.status(415).json({error: "import expects UTF-8 Markdown text, not binary"});
     if (text.length > MAX_DOCUMENT_CHARS) return res.status(413).json({error: `document exceeds the ${MAX_DOCUMENT_CHARS}-character limit`});
-    return createImportedDocument(folderId, directoryName(queryName) ?? "Imported.md", text, principal, res);
+    return createImportedDocument(folderId, directoryName(queryName) ?? "Imported.md", text, author, res);
   }
 
   // --- Zip bundle path ---
@@ -611,7 +501,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
   const name = directoryName(queryName ?? mdEntry.name) ?? "Imported.md";
   let created;
   try {
-    created = createDocument(folderId, name, principal?.id ?? null);
+    created = createDocument(folderId, name);
     if (!created) return res.status(500).json({error: "document could not be created"});
   } catch (error) {
     return res.status(409).json({error: error instanceof Error ? error.message : "document could not be created"});
@@ -622,7 +512,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
     if (!entry.name.startsWith("assets/") || entry.name.length <= "assets/".length) continue;
     const filename = entry.name.slice("assets/".length);
     try {
-      const file = saveFile(entry.bytes, guessMimeType(filename), created.id, {filename, uploadedBy: principal?.displayName});
+      const file = saveFile(entry.bytes, guessMimeType(filename), created.id, {filename, uploadedBy: author});
       idByFilename.set(filename, file.id);
     } catch { /* skip an unreadable/invalid asset; its link stays as assets/<filename> */ }
   }
@@ -630,7 +520,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
     const id = idByFilename.get(filename);
     return id ? `/api/files/${id}` : null;
   });
-  seedDocumentContent(created.id, getLiveDocument(created.id), text, principal?.displayName ?? "import");
+  seedDocumentContent(created.id, getLiveDocument(created.id), text, author);
   return res.status(201).json(created);
 });
 
@@ -639,7 +529,7 @@ app.post("/api/folders/:folderId/import", rawFileBody, (req, res) => {
 app.get("/api/documents/:documentId/files", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "read");
+  const doc = loadDocument(id, res);
   if (!doc) return;
   return res.json({files: listFiles(id)});
 });
@@ -651,7 +541,7 @@ const serveFile = (rawId: string, req: express.Request, res: express.Response) =
   const id = integerId(rawId);
   const metadata = Number.isNaN(id) ? undefined : getFileMetadata(id);
   const doc = metadata && getDocument(metadata.documentId);
-  if (!metadata || !doc || !can(principalFromRequest(req), "read", doc)) {
+  if (!metadata || !doc) {
     return res.status(404).json({error: "file not found"});
   }
   const bytes = readFileBytes(id);
@@ -681,262 +571,36 @@ app.delete("/api/files/:id", (req, res) => {
   if (Number.isNaN(id)) return res.status(400).json({error: "id must be an integer"});
   const file = getFileMetadata(id);
   const doc = file && getDocument(file.documentId);
-  const principal = principalFromRequest(req);
-  if (!file || !doc || !can(principal, "read", doc)) return res.status(404).json({error: "file not found"});
-  if (!can(principal, "write", doc)) return res.status(403).json({error: "editing this document is required to remove its attachments"});
+  if (!file || !doc) return res.status(404).json({error: "file not found"});
   return deleteFile(id) ? res.status(204).end() : res.status(404).json({error: "file not found"});
 });
 
 // Redirect to GitHub for sign-in. A random state in a short-lived cookie is
 // checked on callback to prevent CSRF.
-// Only ever redirect back to a same-origin path (starts with a single "/"), so a
-// crafted `returnTo` cannot bounce the user to another site after sign-in.
-const safeReturnTo = (value: unknown): string | undefined =>
-  typeof value === "string" && /^\/(?!\/)/.test(value) && value.length <= 512 ? value : undefined;
-
-// The OAuth flow only exists when sign-in does. In open mode these routes are
-// never registered, so a stray /auth/login 404s instead of failing confusingly.
-if (!authDisabled) {
-  app.get("/auth/login", (req, res) => {
-    if (!githubClientId) return res.status(500).send("GitHub OAuth is not configured (set GITHUB_CLIENT_ID).");
-    const state = crypto.randomUUID();
-    res.cookie("oauth_state", state, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
-    // Remember where the visitor was (e.g. a shared /documents/:id deep link) so the
-    // callback can land them back there instead of the home page.
-    const returnTo = safeReturnTo(req.query.returnTo);
-    if (returnTo) res.cookie("oauth_return", returnTo, {httpOnly: true, sameSite: "lax", path: "/", secure: secureCookies, maxAge: 600_000});
-    const params = new URLSearchParams({
-      client_id: githubClientId,
-      redirect_uri: githubCallbackUrl,
-      scope: "read:user user:email",
-      state,
-    });
-    return res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
-  });
-
-  app.get("/auth/callback", async (req, res) => {
-    const {code, state} = req.query;
-    if (typeof code !== "string" || typeof state !== "string" || state !== parseCookies(req).oauth_state) {
-      return res.status(400).send("Invalid OAuth state.");
-    }
-    res.clearCookie("oauth_state");
-    try {
-      const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
-        method: "POST",
-        headers: {accept: "application/json", "content-type": "application/json"},
-        body: JSON.stringify({client_id: githubClientId, client_secret: githubClientSecret, code, redirect_uri: githubCallbackUrl}),
-      });
-      const accessToken = (await tokenResponse.json())?.access_token;
-      if (!accessToken) return res.status(401).send("OAuth token exchange failed.");
-
-      const ghHeaders = {authorization: `Bearer ${accessToken}`, accept: "application/vnd.github+json", "user-agent": "ai-collaborative-editor"};
-      const user = await (await fetch("https://api.github.com/user", {headers: ghHeaders})).json();
-      let email: string | undefined = user.email ?? undefined;
-      if (!email) {
-        const emails = await (await fetch("https://api.github.com/user/emails", {headers: ghHeaders})).json();
-        if (Array.isArray(emails)) {
-          email = (emails.find((e) => e.primary && e.verified) ?? emails.find((e) => e.verified))?.email;
-        }
-      }
-      if (!isAllowed(allowlist, user.login, email)) {
-        return res.status(403).send("This GitHub account is not on the allowlist for this application.");
-      }
-      const principal = upsertHumanPrincipal("github", String(user.id), email, user.name || user.login);
-      // Re-evaluate the role on every sign-in so allowlist changes take effect.
-      setPrincipalRole(principal.id, isAllowed(adminAllowlist, user.login, email) ? "admin" : "member");
-      const {id, expiresAt} = createSession(principal.id);
-      setSessionCookie(res, id, expiresAt);
-      const returnTo = safeReturnTo(parseCookies(req).oauth_return) ?? "/";
-      res.clearCookie("oauth_return");
-      return res.redirect(returnTo);
-    } catch {
-      return res.status(502).send("Could not complete GitHub sign-in.");
-    }
-  });
-
-  app.post("/auth/logout", (req, res) => {
-    deleteSession(parseCookies(req).sid);
-    res.clearCookie("sid");
-    return res.status(204).end();
-  });
-}
-
-// `authMode` lets the client hide the sign-in and token affordances when there is
-// nothing to sign in to.
-app.get("/api/me", (req, res) => {
-  const principal = sessionPrincipal(req);
-  res.json({user: principal ? {id: principal.id, name: principal.displayName} : null, authMode});
-});
-
-// Test-only sign-in seam, enabled only when AUTH_DEV_LOGIN=1 (set by the e2e
-// server, never in production). Lets tests establish a human session without the
-// interactive GitHub flow.
-if (process.env.AUTH_DEV_LOGIN === "1") {
-  app.post("/auth/dev-login", (req, res) => {
-    const name = directoryName(req.body?.name) ?? "Dev User";
-    const principal = upsertHumanPrincipal("dev", name, undefined, name);
-    setPrincipalRole(principal.id, req.body?.admin ? "admin" : "member");
-    const {id, expiresAt} = createSession(principal.id);
-    setSessionCookie(res, id, expiresAt);
-    return res.json({user: {id: principal.id, name: principal.displayName}});
-  });
-}
-
-// Agent token management. Gated to an authenticated human session: creating and
-// revoking agent credentials is not something an anonymous caller may do.
-app.get("/api/tokens", (req, res) => {
-  if (!authedHuman(req, res)) return;
-  res.json({tokens: listTokens()});
-});
-
-app.post("/api/tokens", (req, res) => {
-  const human = authedHuman(req, res);
-  if (!human) return;
-  const name = directoryName(req.body?.name);
-  if (!name) return res.status(400).json({error: "a token name (1-200 characters) is required"});
-  // Returns the plaintext exactly once; it is never stored, only its hash.
-  const {token, metadata} = mintAgentToken(name, human.id);
-  return res.status(201).json({token, metadata});
-});
-
-app.delete("/api/tokens/:id", (req, res) => {
-  if (!authedHuman(req, res)) return;
-  const id = integerId(req.params.id);
-  if (Number.isNaN(id)) return res.status(400).json({error: "id must be an integer"});
-  return revokeToken(id) ? res.status(204).end() : res.status(404).json({error: "token not found"});
-});
-
-const listCursors = (id: number, principal: Principal | undefined, res: express.Response) => {
-  const doc = loadDocument(id, principal, res, "read");
-  if (!doc) return;
-  doc.live.removeStaleCursors();
-  res.json(doc.live.getCursors());
-};
-
-const publishCursor = (id: number, req: express.Request, res: express.Response) => {
-  const principal = authedPrincipal(req, res);
-  if (!principal) return;
-  const doc = loadDocument(id, principal, res, "write");
-  if (!doc) return;
-  // Identity is server-set from the token; the :agentId path param is ignored.
-  const agentId = principal.displayName;
-  const length = doc.live.getText().length;
-  const {anchor, head} = req.body ?? {};
-  if (!Number.isInteger(anchor) || !Number.isInteger(head)) {
-    return res.status(400).json({error: "anchor and head must be integers"});
-  }
-  if (anchor < 0 || head < 0 || anchor > length || head > length) {
-    return res.status(400).json({error: `cursor positions must be between 0 and ${length}`});
-  }
-  const cursor = doc.live.upsertCursor(agentId, {anchor, head, label: req.body.label});
-  broadcastToDocument(doc.id, {type: "cursor_update", cursor});
-  return res.json(cursor);
-};
-
-app.get("/api/documents/:documentId/cursors", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) listCursors(id, principalFromRequest(req), res);
-});
-app.post("/api/documents/:documentId/cursor", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) publishCursor(id, req, res);
-});
-
-// --- Per-document sharing (manage-only) -----------------------------------
-// Changing who has access is owner-or-admin only ("manage"), kept separate from
-// editing content ("write") so an editor cannot escalate by adding themselves.
-// loadDocument returns 404 for anyone without manage, so these endpoints don't
-// confirm a document's existence to a non-manager.
-const describeShares = (documentId: number) =>
-  listShares(documentId).map((share) => {
-    const p = getPrincipal(share.principalId);
-    return {principalId: share.principalId, level: share.level, kind: p?.kind ?? null, displayName: p?.displayName ?? `#${share.principalId}`};
-  });
-
-app.get("/api/documents/:documentId/shares", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "manage");
-  if (!doc) return;
-  const owner = doc.meta.ownerId !== null ? getPrincipal(doc.meta.ownerId) : undefined;
-  return res.json({
-    ownerId: doc.meta.ownerId,
-    owner: owner ? {id: owner.id, kind: owner.kind, displayName: owner.displayName} : null,
-    shares: describeShares(id),
-  });
-});
-
-// Principals the manager can still add to this document: everyone except the owner
-// and those already shared. Powers the Share dialog's picker (manage-only).
-app.get("/api/documents/:documentId/share-candidates", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "manage");
-  if (!doc) return;
-  const alreadyShared = new Set(listShares(id).map((share) => share.principalId));
-  const candidates = listPrincipals()
-    .filter((p) => p.id !== doc.meta.ownerId && !alreadyShared.has(p.id))
-    .map((p) => ({principalId: p.id, kind: p.kind, displayName: p.displayName}));
-  return res.json({candidates});
-});
-
-app.post("/api/documents/:documentId/shares", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "manage");
-  if (!doc) return;
-  const level = req.body?.level;
-  if (level !== "editor" && level !== "viewer") return res.status(400).json({error: "level must be 'editor' or 'viewer'"});
-  // Resolve the grantee: a named agent, or an explicit principal id (either kind).
-  let target: Principal | undefined;
-  if (typeof req.body?.agentName === "string" && req.body.agentName.trim()) {
-    target = getAgentByName(req.body.agentName.trim());
-    if (!target) return res.status(404).json({error: "no agent with that name"});
-  } else if (Number.isInteger(req.body?.principalId)) {
-    target = getPrincipal(req.body.principalId);
-    if (!target) return res.status(404).json({error: "no principal with that id"});
-  } else {
-    return res.status(400).json({error: "provide an agentName or a principalId"});
-  }
-  if (target.id === doc.meta.ownerId) return res.status(400).json({error: "the owner already has full access"});
-  setShare(id, target.id, level);
-  return res.status(201).json({principalId: target.id, level, displayName: target.displayName, kind: target.kind});
-});
-
-app.delete("/api/documents/:documentId/shares/:principalId", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id === undefined) return;
-  const doc = loadDocument(id, principalFromRequest(req), res, "manage");
-  if (!doc) return;
-  const principalId = integerId(req.params.principalId);
-  if (Number.isNaN(principalId)) return res.status(400).json({error: "principalId must be an integer"});
-  return removeShare(id, principalId) ? res.status(204).end() : res.status(404).json({error: "share not found"});
+// Who the browser is, as far as this build is concerned. Kept so the client's
+// startup path is unchanged; there is nobody to sign in or out as.
+app.get("/api/me", (_req, res) => {
+  res.json({user: {name: LOCAL_AUTHOR}, authMode: "none"});
 });
 
 websocketServer.on("connection", (socket, request) => {
   // Authenticate the browser at the WebSocket handshake from its session cookie,
-  // and join the room for the requested document (`?doc=<id>`, defaulting to the
-  // legacy single document). The authorization choke point decides access; a
-  // socket that may not read the document is refused and closed, matching the 404
-  // the HTTP routes return. Edits are stamped with the principal, never a
-  // client-supplied id.
-  if (authDisabled) {
-    const reason = loopbackRejection({origin: request.headers.origin, host: request.headers.host}, port);
-    if (reason) {
-      noteRejection(reason);
-      socket.send(JSON.stringify({type: "error", error: "refused: this server accepts local requests only"}));
-      return socket.close();
-    }
+  // Join the room for the requested document (`?doc=<id>`). The loopback guard
+  // applies here too: a WebSocket upgrade is a request like any other, and is the
+  // one path that would otherwise let a foreign page drive the server.
+  const reason = loopbackRejection({origin: request.headers.origin, host: request.headers.host}, port);
+  if (reason) {
+    noteRejection(reason);
+    socket.send(JSON.stringify({type: "error", error: "refused: this server accepts local requests only"}));
+    return socket.close();
   }
-  const principal = authDisabled
-    ? openModePrincipal(request.headers)
-    : getSessionPrincipal(parseCookieHeader(request.headers.cookie).sid);
+  const author = authorFrom(request.headers);
   const requestedId = new URL(request.url ?? "/ws", "http://localhost").searchParams.get("doc");
   const documentId = requestedId && /^\d+$/.test(requestedId) ? Number(requestedId) : NaN;
   const meta = Number.isNaN(documentId) ? undefined : getDocument(documentId);
-  // Every connection must name a document it may read (`/ws?doc=<id>`); otherwise the
-  // socket is refused and closed — there is no default document to fall back to.
-  if (!meta || !can(principal, "read", meta)) {
+  // Every connection must name an existing document (`/ws?doc=<id>`); there is no
+  // default document to fall back to.
+  if (!meta) {
     socket.send(JSON.stringify({type: "error", error: "document not found"}));
     return socket.close();
   }
@@ -949,19 +613,17 @@ websocketServer.on("connection", (socket, request) => {
     update: toBase64(live.encodeState()),
     ...live.getMetadata(),
     cursors: live.getCursors(),
-    canEdit: can(principal, "write", meta),
-    canManage: can(principal, "manage", meta),
+    canEdit: true,
+    canManage: true,
   }));
   socket.on("close", () => leaveRoom(documentId, socket));
   socket.on("message", (raw) => {
     try {
       const message = JSON.parse(raw.toString());
       if (message.type === "document_update") {
-        if (!can(principal, "write", meta)) return socket.send(JSON.stringify({type: "error", error: "sign in to edit"}));
-        acceptUpdate(documentId, live, principal!.displayName, fromBase64(message.update), message.metadata, undefined, principal!.id);
+        acceptUpdate(documentId, live, author, fromBase64(message.update), message.metadata);
       } else if (message.type === "cursor_update") {
-        if (!can(principal, "write", meta)) return;
-        const cursor = live.upsertCursor(principal!.displayName, message.cursor ?? {});
+        const cursor = live.upsertCursor(author, message.cursor ?? {});
         broadcastToDocument(documentId, {type: "cursor_update", cursor});
       }
     } catch {
@@ -1025,5 +687,5 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 app.get("/{*splat}", (_req, res) => res.sendFile(path.join(publicDir, "index.html")));
 
 server.listen(port, bindHost, () => {
-  console.log(`AI collaborative editor running at http://localhost:${port} (auth: ${authMode})`);
+  console.log(`live-md (local-only) running at http://localhost:${port}`);
 });

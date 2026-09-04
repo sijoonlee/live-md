@@ -29,14 +29,14 @@ const lineStart = (text: string, line: number) => {
 test("a root comment resolves to the line it was anchored on", () => {
   const text = "line one\nline two\nline three";
   const doc = docWith(text);
-  addRootComment(doc, {charIndex: lineStart(text, 2) + 3, authorId: 1, body: "hi"});
+  addRootComment(doc, {charIndex: lineStart(text, 2) + 3, author: "alice", body: "hi"});
   assert.equal(listComments(doc)[0].line, 2);
 });
 
 test("inserting lines above pushes the comment down", () => {
   const text = "alpha\nbeta\ngamma";
   const doc = docWith(text);
-  addRootComment(doc, {charIndex: lineStart(text, 3), authorId: 1, body: "on gamma"});
+  addRootComment(doc, {charIndex: lineStart(text, 3), author: "alice", body: "on gamma"});
   assert.equal(listComments(doc)[0].line, 3);
 
   // Insert two new lines at the very top; the anchored line moves to 5.
@@ -47,7 +47,7 @@ test("inserting lines above pushes the comment down", () => {
 test("inserting below the anchor does not move the comment", () => {
   const text = "alpha\nbeta\ngamma";
   const doc = docWith(text);
-  addRootComment(doc, {charIndex: lineStart(text, 1), authorId: 1, body: "on alpha"});
+  addRootComment(doc, {charIndex: lineStart(text, 1), author: "alice", body: "on alpha"});
 
   doc.getText("content").insert(text.length, "\ndelta\nepsilon");
   assert.equal(listComments(doc)[0].line, 1);
@@ -57,7 +57,7 @@ test("deleting the anchored line's first letter keeps it on the same line", () =
   const text = "alpha\nbeta\ngamma";
   const doc = docWith(text);
   const start = lineStart(text, 2);
-  addRootComment(doc, {charIndex: start, authorId: 1, body: "on beta"});
+  addRootComment(doc, {charIndex: start, author: "alice", body: "on beta"});
 
   // Remove the "b" of "beta" (tombstone) — relative position still resolves.
   doc.getText("content").delete(start, 1);
@@ -68,7 +68,7 @@ test("deleting the whole line's text keeps it on the now-empty line", () => {
   const text = "alpha\nbeta\ngamma";
   const doc = docWith(text);
   const start = lineStart(text, 2);
-  addRootComment(doc, {charIndex: start, authorId: 1, body: "on beta"});
+  addRootComment(doc, {charIndex: start, author: "alice", body: "on beta"});
 
   doc.getText("content").delete(start, "beta".length); // "alpha\n\ngamma"
   assert.equal(doc.getText("content").toString(), "alpha\n\ngamma");
@@ -88,8 +88,8 @@ test("an anchor whose content the doc never received resolves to null (detached)
 
 test("replies carry no anchor and thread under their parent", () => {
   const doc = docWith("only line");
-  const rootId = addRootComment(doc, {charIndex: 0, authorId: 1, body: "root"});
-  const replyId = addReply(doc, {parentId: rootId, authorId: 2, body: "reply"});
+  const rootId = addRootComment(doc, {charIndex: 0, author: "alice", body: "root"});
+  const replyId = addReply(doc, {parentId: rootId, author: "bob", body: "reply"});
 
   const list = listComments(doc);
   const reply = list.find((c) => c.id === replyId)!;
@@ -100,8 +100,8 @@ test("replies carry no anchor and thread under their parent", () => {
 
 test("resolve is a root-only, whole-thread flag", () => {
   const doc = docWith("only line");
-  const rootId = addRootComment(doc, {charIndex: 0, authorId: 1, body: "root"});
-  const replyId = addReply(doc, {parentId: rootId, authorId: 2, body: "reply"});
+  const rootId = addRootComment(doc, {charIndex: 0, author: "alice", body: "root"});
+  const replyId = addReply(doc, {parentId: rootId, author: "bob", body: "reply"});
 
   setResolved(doc, rootId, true);
   setResolved(doc, replyId, true); // no-op on a reply
@@ -112,8 +112,8 @@ test("resolve is a root-only, whole-thread flag", () => {
 
 test("deleting a root with replies tombstones it; a leaf is removed", () => {
   const doc = docWith("only line");
-  const rootId = addRootComment(doc, {charIndex: 0, authorId: 1, body: "root"});
-  const replyId = addReply(doc, {parentId: rootId, authorId: 2, body: "reply"});
+  const rootId = addRootComment(doc, {charIndex: 0, author: "alice", body: "root"});
+  const replyId = addReply(doc, {parentId: rootId, author: "bob", body: "reply"});
 
   deleteComment(doc, rootId); // has a reply → tombstone
   assert.equal(listComments(doc).find((c) => c.id === rootId)!.body, "[deleted]");
@@ -125,14 +125,14 @@ test("deleting a root with replies tombstones it; a leaf is removed", () => {
 
 test("updateCommentBody edits in place", () => {
   const doc = docWith("only line");
-  const id = addRootComment(doc, {charIndex: 0, authorId: 1, body: "before"});
+  const id = addRootComment(doc, {charIndex: 0, author: "alice", body: "before"});
   updateCommentBody(doc, id, "after");
   assert.equal(listComments(doc)[0].body, "after");
 });
 
 test("comments ride the Y.Doc: they sync via state updates", () => {
   const a = docWith("shared line");
-  const id = addRootComment(a, {charIndex: 0, authorId: 1, body: "hello"});
+  const id = addRootComment(a, {charIndex: 0, author: "alice", body: "hello"});
 
   const b = new Y.Doc();
   Y.applyUpdate(b, Y.encodeStateAsUpdate(a));

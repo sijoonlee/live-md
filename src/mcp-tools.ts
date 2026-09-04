@@ -1,8 +1,5 @@
 import * as Y from "yjs";
 import type {LiveDocument} from "./document.js";
-import type {Principal} from "./auth.js";
-import type {Action} from "./authz.js";
-import {can} from "./authz.js";
 import {getDocument, listDocuments, listFolders, type DirectoryDocument} from "./directory.js";
 import {getLiveDocument} from "./document-registry.js";
 import {addRootComment, listComments} from "./comments.js";
@@ -100,7 +97,7 @@ export type AcceptUpdate = (
 const commit = (
   documentId: number,
   live: LiveDocument,
-  principal: Principal,
+  author: string,
   acceptUpdate: AcceptUpdate,
   metadata: Record<string, unknown>,
   mutate: (replica: Y.Doc) => void,
@@ -111,31 +108,27 @@ const commit = (
   mutate(replica);
   let revision = live.getRevision();
   for (const update of updates) {
-    revision = acceptUpdate(documentId, live, principal.displayName, update, metadata, undefined, principal.id);
+    revision = acceptUpdate(documentId, live, author, update, metadata);
   }
   return revision;
 };
 
-// --- access ---------------------------------------------------------------
+// --- documents ------------------------------------------------------------
 
-// The same choke point the HTTP routes use, with the same "no access looks exactly
-// like not existing" rule, so ids stay unenumerable over MCP too.
-const requireDocument = (documentId: number, principal: Principal, action: Action) => {
+// Every document is reachable in this build; the only failure is one that does not
+// exist. Kept as a helper so the tools all report a missing document the same way.
+const requireDocument = (documentId: number) => {
   const meta = getDocument(documentId);
-  if (!meta || !can(principal, action, meta)) {
-    throw new ToolError(`document ${documentId} not found`);
-  }
+  if (!meta) throw new ToolError(`document ${documentId} not found`);
   return {meta, live: getLiveDocument(documentId)};
 };
 
 // Walk the folder tree so each document can be reported with a human-meaningful
 // path — an agent asked to "work on my design doc" needs names, not bare ids.
-export const readableDocuments = (principal: Principal): {document: DirectoryDocument; path: string}[] => {
+export const allDocuments = (): {document: DirectoryDocument; path: string}[] => {
   const found: {document: DirectoryDocument; path: string}[] = [];
   const walk = (folderId: number, prefix: string) => {
-    for (const document of listDocuments(folderId)) {
-      if (can(principal, "read", document)) found.push({document, path: `${prefix}/${document.name}`});
-    }
+    for (const document of listDocuments(folderId)) found.push({document, path: `${prefix}/${document.name}`});
     for (const child of listFolders(folderId)) walk(child.id, `${prefix}/${child.name}`);
   };
   for (const root of listFolders(null)) walk(root.id, root.name === "Root" ? "" : `/${root.name}`);
@@ -144,16 +137,16 @@ export const readableDocuments = (principal: Principal): {document: DirectoryDoc
 
 // --- tools ----------------------------------------------------------------
 
-export const listDocumentsTool = (principal: Principal) =>
-  readableDocuments(principal).map(({document, path}) => ({
+export const listDocumentsTool = () =>
+  allDocuments().map(({document, path}) => ({
     documentId: document.id,
     name: document.name,
     path,
     updatedAt: document.updatedAt,
   }));
 
-export const readDocumentTool = (principal: Principal, documentId: number) => {
-  const {meta, live} = requireDocument(documentId, principal, "read");
+export const readDocumentTool = (documentId: number) => {
+  const {meta, live} = requireDocument(documentId);
   return {
     documentId,
     name: meta.name,
@@ -166,18 +159,18 @@ export const readDocumentTool = (principal: Principal, documentId: number) => {
 };
 
 export const editDocumentTool = (
-  principal: Principal,
+  author: string,
   acceptUpdate: AcceptUpdate,
   args: {documentId: number; oldString: string; newString: string; expectedVersion?: number},
 ) => {
-  const {live} = requireDocument(args.documentId, principal, "write");
+  const {live} = requireDocument(args.documentId);
   if (args.expectedVersion !== undefined && args.expectedVersion !== live.getRevision()) {
     throw new ToolError(
       `document changed since it was read (expected version ${args.expectedVersion}, now ${live.getRevision()}). Re-read it and retry.`,
     );
   }
   const {start, end} = resolveAnchor(live.getText(), args.oldString);
-  const version = commit(args.documentId, live, principal, acceptUpdate, {reason: "mcp:edit_document"}, (replica) => {
+  const version = commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:edit_document"}, (replica) => {
     const content = replica.getText("content");
     content.delete(start, end - start);
     if (args.newString.length > 0) content.insert(start, args.newString);
@@ -186,13 +179,13 @@ export const editDocumentTool = (
 };
 
 export const appendDocumentTool = (
-  principal: Principal,
+  author: string,
   acceptUpdate: AcceptUpdate,
   args: {documentId: number; content: string},
 ) => {
-  const {live} = requireDocument(args.documentId, principal, "write");
+  const {live} = requireDocument(args.documentId);
   if (args.content.length === 0) throw new ToolError("content must not be empty");
-  const version = commit(args.documentId, live, principal, acceptUpdate, {reason: "mcp:append_document"}, (replica) => {
+  const version = commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:append_document"}, (replica) => {
     const content = replica.getText("content");
     content.insert(content.length, args.content);
   });
@@ -200,29 +193,29 @@ export const appendDocumentTool = (
 };
 
 export const addCommentTool = (
-  principal: Principal,
+  author: string,
   acceptUpdate: AcceptUpdate,
   args: {documentId: number; anchorText: string; body: string},
 ) => {
-  const {live} = requireDocument(args.documentId, principal, "write");
+  const {live} = requireDocument(args.documentId);
   if (args.body.trim().length === 0) throw new ToolError("body must not be empty");
   // Anchor on text, not a line number: the comment then lands on the passage the
   // agent means even though it never saw line numbers.
   const {start} = resolveAnchor(live.getText(), args.anchorText);
   let commentId = "";
-  commit(args.documentId, live, principal, acceptUpdate, {reason: "mcp:add_comment"}, (replica) => {
-    commentId = addRootComment(replica, {charIndex: start, authorId: principal.id, body: args.body});
+  commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:add_comment"}, (replica) => {
+    commentId = addRootComment(replica, {charIndex: start, author, body: args.body});
   });
   return {commentId, documentId: args.documentId};
 };
 
-export const listCommentsTool = (principal: Principal, documentId: number) => {
-  const {live} = requireDocument(documentId, principal, "read");
+export const listCommentsTool = (documentId: number) => {
+  const {live} = requireDocument(documentId);
   return listComments(replicaOf(live)).map((comment) => ({
     commentId: comment.id,
     parentId: comment.parentId,
     line: comment.line,
-    authorId: comment.authorId,
+    author: comment.author,
     body: comment.body,
     resolved: comment.resolved,
   }));

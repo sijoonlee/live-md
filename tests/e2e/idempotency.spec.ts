@@ -11,25 +11,18 @@ const insertUpdate = (value: string) => {
 };
 
 test("a retried requestId returns the same revision and applies the update once", async ({page}) => {
-  await page.goto("/"); // establish the signed-in session (storageState)
+  await page.goto("/");
 
-  // Create an owned document, an agent, and grant the agent editor access.
   const agentName = `idem-bot-${Date.now()}`;
-  const {docId, token} = await page.evaluate(async (name) => {
+  const docId = await page.evaluate(async (name) => {
     const root = (await (await fetch("/api/folders")).json()).folders[0];
     const doc = await (await fetch(`/api/folders/${root.id}/documents`, {
       method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name: `idem-${name}.md`}),
     })).json();
-    const {token} = await (await fetch("/api/tokens", {
-      method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name}),
-    })).json();
-    await fetch(`/api/documents/${doc.id}/shares`, {
-      method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({agentName: name, level: "editor"}),
-    });
-    return {docId: doc.id as number, token: token as string};
+    return doc.id as number;
   }, agentName);
 
-  const auth = {authorization: `Bearer ${token}`, "content-type": "application/json"};
+  const auth = {"x-agent-id": agentName, "content-type": "application/json"};
   const update = insertUpdate("hello once");
   const body = {requestId: `req-${Date.now()}`, update};
 

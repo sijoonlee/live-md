@@ -15,13 +15,12 @@ const docA = createDocument(rootId, "activity-a.md")!.id;
 const docB = createDocument(rootId, "activity-b.md")!.id;
 
 test("recordActivity mints a durable id and listActivity returns the entry", () => {
-  const id = recordActivity({documentId: docA, revision: 1, authorId: 7, authorLabel: "alice", metadata: {reason: "x"}});
+  const id = recordActivity({documentId: docA, revision: 1, authorLabel: "alice", metadata: {reason: "x"}});
   assert.match(id, /^[0-9a-f-]{36}$/); // uuid
   const list = listActivity(docA);
   assert.equal(list.length, 1);
   assert.equal(list[0].id, id);
   assert.equal(list[0].revision, 1);
-  assert.equal(list[0].authorId, 7);
   assert.equal(list[0].authorLabel, "alice");
   assert.deepEqual(list[0].metadata, {reason: "x"});
 });

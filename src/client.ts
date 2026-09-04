@@ -186,335 +186,21 @@ $("toggle-directory").addEventListener("click", () => {
   directorySidebar.hidden = !visible;
   $("toggle-directory").setAttribute("aria-pressed", String(visible));
   if (!visible) return;
-  renderDirectoryGate();
-  if (currentUser) void loadDirectory();
+  void loadDirectory();
 });
 $("directory-refresh").addEventListener("click", () => void loadDirectory());
-$("directory-signin").addEventListener("click", signIn);
-$("signin-screen-button").addEventListener("click", signIn);
 
-// --- Human auth (sign-in state) -------------------------------------------
-type Me = {id: number; name: string} | null;
-let currentUser: Me = null;
-// "none" when the server runs without authentication (a local single-user
-// install): there is nobody to sign in or out as, so those affordances are hidden.
-let authMode: "github" | "none" = "github";
-
-// id → display name for every principal, so comment authors render as names. Loaded
-// once signed in; workspace-wide visibility is intentional for this closed circle.
-const principalNames = new Map<number, string>();
-async function loadPrincipalNames() {
-  try {
-    const {principals} = await directoryRequest<{principals: {id: number; displayName: string}[]}>("/api/principals");
-    principalNames.clear();
-    for (const p of principals) principalNames.set(p.id, p.displayName);
-  } catch { /* names are best-effort; fall back to #id */ }
-}
-const authorName = (id: number) => principalNames.get(id) ?? `#${id}`;
-
-async function refreshAuth() {
-  try {
-    const me = await directoryRequest<{user: Me; authMode?: "github" | "none"}>("/api/me");
-    currentUser = me.user;
-    authMode = me.authMode ?? "github";
-  } catch {
-    currentUser = null;
-  }
-  if (currentUser) void loadPrincipalNames();
-  renderAuthStatus();
-  renderAppGate();
-  renderTokenGate();
-  renderDirectoryGate();
-}
-
-// The whole app is gated: anonymous visitors see a "Please sign in" screen instead
-// of the document.
-function renderAppGate() {
-  const signedIn = !!currentUser;
-  $("signin-screen").hidden = signedIn;
-  $("app-main").hidden = !signedIn;
-}
-
-// The Explorer panel is gated like the token panel: show a sign-in prompt until
-// signed in.
-function renderDirectoryGate() {
-  const signedIn = !!currentUser;
-  $("directory-auth-gate").hidden = signedIn;
-  $("directory-authed").hidden = !signedIn;
-}
+// --- Who we are -----------------------------------------------------------
+// There is no sign-in in this build: the local user is always present, and the
+// server labels their edits "local". Kept as a constant so the rest of the client
+// reads the same as the multi-user one.
+const LOCAL_USER = "local";
 
 function renderAuthStatus() {
   const editMode = $("edit-mode");
-  editMode.textContent = currentUser ? `Editing as ${currentUser.name}` : "Read-only — sign in to edit";
-  editMode.classList.toggle("read-only", !currentUser);
-  const host = $("auth-status");
-  host.replaceChildren();
-  if (currentUser) {
-    const name = document.createElement("span");
-    name.className = "auth-user";
-    name.textContent = currentUser.name;
-    if (authMode === "none") return void host.append(name);
-    const out = document.createElement("button");
-    out.type = "button";
-    out.className = "auth-button";
-    out.textContent = "Sign out";
-    out.addEventListener("click", () => void signOut());
-    host.append(name, out);
-  } else {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "auth-button";
-    button.textContent = "Sign in with GitHub";
-    button.addEventListener("click", signIn);
-    host.append(button);
-  }
+  editMode.textContent = `Editing as ${LOCAL_USER}`;
+  editMode.classList.remove("read-only");
 }
-
-function signIn() {
-  // Preserve the current path (e.g. a shared /documents/:id link) so the OAuth
-  // callback returns here instead of the home page.
-  const returnTo = location.pathname + location.search;
-  window.location.href = `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
-}
-
-async function signOut() {
-  await fetch("/auth/logout", {method: "POST"});
-  // Reload so the editor is re-created read-only (editability is fixed at creation).
-  window.location.reload();
-}
-
-// Show the token form/list only when signed in; otherwise show the sign-in gate.
-function renderTokenGate() {
-  const signedIn = !!currentUser;
-  $("token-auth-gate").hidden = signedIn;
-  $("token-authed").hidden = !signedIn;
-  if (signedIn) void loadTokens();
-}
-
-// --- Agent tokens panel ---------------------------------------------------
-type TokenMetadata = {id: number; name: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null};
-
-function formatTokenTime(value: string | null) {
-  return value ? new Date(value).toLocaleString() : "never";
-}
-
-async function loadTokens() {
-  const list = $("token-list");
-  list.replaceChildren();
-  try {
-    const {tokens} = await directoryRequest<{tokens: TokenMetadata[]}>("/api/tokens");
-    const active = tokens.filter((token) => !token.revokedAt);
-    if (active.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "directory-status";
-      empty.textContent = "No tokens yet";
-      list.append(empty);
-      return;
-    }
-    for (const token of active) {
-      const row = document.createElement("div");
-      row.className = "token-row";
-      const info = document.createElement("div");
-      info.className = "token-info";
-      const name = document.createElement("strong");
-      name.textContent = token.name;
-      const meta = document.createElement("small");
-      meta.textContent = `created ${formatTokenTime(token.createdAt)} · last used ${formatTokenTime(token.lastUsedAt)}`;
-      info.append(name, meta);
-      const revoke = document.createElement("button");
-      revoke.type = "button";
-      revoke.className = "token-revoke danger-action";
-      revoke.textContent = "Revoke";
-      revoke.addEventListener("click", () => void revokeToken(token));
-      row.append(info, revoke);
-      list.append(row);
-    }
-  } catch (error) {
-    const message = document.createElement("p");
-    message.className = "directory-status directory-error";
-    message.textContent = error instanceof Error ? error.message : "Could not load tokens";
-    list.append(message);
-  }
-}
-
-async function revokeToken(token: TokenMetadata) {
-  if (!window.confirm(`Revoke "${token.name}"? Any agent using it will stop working.`)) return;
-  await directoryRequest(`/api/tokens/${token.id}`, {method: "DELETE"});
-  await loadTokens();
-}
-
-async function createToken(event: Event) {
-  event.preventDefault();
-  const input = $("token-name-input") as HTMLInputElement;
-  const name = input.value.trim();
-  const errorElement = $("token-create-error");
-  errorElement.hidden = true;
-  if (!name) {
-    errorElement.textContent = "Enter a token name.";
-    errorElement.hidden = false;
-    return;
-  }
-  try {
-    const {token} = await directoryRequest<{token: string}>("/api/tokens", {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify({name}),
-    });
-    input.value = "";
-    // Show the plaintext once; it is unrecoverable afterward.
-    ($("token-created-input") as HTMLInputElement).value = token;
-    $("token-created").hidden = false;
-    await loadTokens();
-  } catch (error) {
-    errorElement.textContent = error instanceof Error ? error.message : "Could not create token";
-    errorElement.hidden = false;
-  }
-}
-
-async function copyToken() {
-  const input = $("token-created-input") as HTMLInputElement;
-  input.select();
-  try {
-    await navigator.clipboard.writeText(input.value);
-    const button = $("token-copy");
-    button.textContent = "Copied";
-    setTimeout(() => { button.textContent = "Copy"; }, 1500);
-  } catch {
-    // Clipboard blocked; the value is already selected for a manual copy.
-  }
-}
-
-const tokenSidebar = $("token-sidebar");
-$("toggle-tokens").addEventListener("click", () => {
-  const visible = tokenSidebar.hidden;
-  tokenSidebar.hidden = !visible;
-  $("toggle-tokens").setAttribute("aria-pressed", String(visible));
-  if (visible) void refreshAuth();
-});
-$("token-refresh").addEventListener("click", () => void refreshAuth());
-$("token-signin").addEventListener("click", signIn);
-$("token-create-form").addEventListener("submit", (event) => void createToken(event));
-$("token-copy").addEventListener("click", () => void copyToken());
-$("token-created-done").addEventListener("click", () => {
-  $("token-created").hidden = true;
-  ($("token-created-input") as HTMLInputElement).value = "";
-});
-
-// --- Document sharing (owner/admin only) ----------------------------------
-type ShareEntry = {principalId: number; level: "editor" | "viewer"; kind: string | null; displayName: string};
-
-async function openShareDialog() {
-  if (activeDocumentId === undefined || !canManageActive) return;
-  $("share-error").hidden = true;
-  await loadShares();
-  $("share-dialog").hidden = false;
-}
-
-type ShareCandidate = {principalId: number; kind: string; displayName: string};
-
-// Populate the "who to add" dropdown from the server (everyone not already on the
-// document), so the user picks instead of typing a name.
-async function loadShareCandidates() {
-  const select = $("share-principal") as HTMLSelectElement;
-  const addButton = $("share-add") as HTMLButtonElement;
-  select.replaceChildren();
-  try {
-    const {candidates} = await directoryRequest<{candidates: ShareCandidate[]}>(`/api/documents/${activeDocumentId}/share-candidates`);
-    if (candidates.length === 0) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No one else to add";
-      select.append(option);
-      select.disabled = true;
-      addButton.disabled = true;
-      return;
-    }
-    select.disabled = false;
-    addButton.disabled = false;
-    for (const candidate of candidates) {
-      const option = document.createElement("option");
-      option.value = String(candidate.principalId);
-      option.textContent = `${candidate.displayName}${candidate.kind === "agent" ? " (agent)" : ""}`;
-      select.append(option);
-    }
-  } catch {
-    select.replaceChildren();
-    select.disabled = true;
-    addButton.disabled = true;
-  }
-}
-
-async function loadShares() {
-  const list = $("share-list");
-  list.replaceChildren();
-  await loadShareCandidates();
-  try {
-    const data = await directoryRequest<{owner: {displayName: string} | null; shares: ShareEntry[]}>(`/api/documents/${activeDocumentId}/shares`);
-    const ownerRow = document.createElement("div");
-    ownerRow.className = "share-row share-owner";
-    const ownerName = document.createElement("span");
-    ownerName.textContent = data.owner ? data.owner.displayName : "This app (legacy document)";
-    const ownerBadge = document.createElement("em");
-    ownerBadge.textContent = "owner";
-    ownerRow.append(ownerName, ownerBadge);
-    list.append(ownerRow);
-    if (data.shares.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "directory-status";
-      empty.textContent = "No one else has access.";
-      list.append(empty);
-    }
-    for (const share of data.shares) {
-      const row = document.createElement("div");
-      row.className = "share-row";
-      const name = document.createElement("span");
-      name.textContent = `${share.displayName}${share.kind === "agent" ? " (agent)" : ""}`;
-      const level = document.createElement("em");
-      level.textContent = share.level;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "token-revoke danger-action";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", () => void removeShareEntry(share.principalId));
-      row.append(name, level, remove);
-      list.append(row);
-    }
-  } catch (error) {
-    const message = document.createElement("p");
-    message.className = "directory-status directory-error";
-    message.textContent = error instanceof Error ? error.message : "Could not load sharing";
-    list.append(message);
-  }
-}
-
-async function addShare(event: Event) {
-  event.preventDefault();
-  const principalId = Number(($("share-principal") as HTMLSelectElement).value);
-  const level = ($("share-level") as HTMLSelectElement).value;
-  $("share-error").hidden = true;
-  if (!principalId) return;
-  try {
-    await directoryRequest(`/api/documents/${activeDocumentId}/shares`, {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify({principalId, level}),
-    });
-    await loadShares();
-  } catch (error) {
-    $("share-error").textContent = error instanceof Error ? error.message : "Could not add access";
-    $("share-error").hidden = false;
-  }
-}
-
-async function removeShareEntry(principalId: number) {
-  await directoryRequest(`/api/documents/${activeDocumentId}/shares/${principalId}`, {method: "DELETE"});
-  await loadShares();
-}
-
-$("share-document").addEventListener("click", () => void openShareDialog());
-$("share-close").addEventListener("click", () => { $("share-dialog").hidden = true; });
-$("share-dialog").addEventListener("click", (event) => { if (event.target === $("share-dialog")) $("share-dialog").hidden = true; });
-$("share-add-form").addEventListener("submit", (event) => void addShare(event));
 
 $("toggle-comments").addEventListener("click", () => toggleCommentsPanel());
 $("toggle-activity").addEventListener("click", () => toggleActivityPanel());
@@ -1046,7 +732,7 @@ function renderCommentEntry(comment: ResolvedComment, depth: number): HTMLElemen
   entry.style.marginLeft = `${depth * 14}px`;
   const meta = document.createElement("div");
   meta.className = "comment-meta";
-  meta.textContent = `${authorName(comment.authorId)} · ${formatTime(comment.createdAt)}`;
+  meta.textContent = `${comment.author} · ${formatTime(comment.createdAt)}`;
   const body = document.createElement("div");
   body.className = "comment-body";
   body.textContent = comment.body;
@@ -1112,8 +798,8 @@ function openThreadPopover(line: number, anchorEl: HTMLElement, view: EditorView
       replyBtn.textContent = "Reply";
       replyBtn.addEventListener("click", () => {
         const text = reply.value.trim();
-        if (!text || currentUser === null) return;
-        commentMutate(() => addReply(localDoc, {parentId: root.id, authorId: currentUser!.id, body: text}));
+        if (!text) return;
+        commentMutate(() => addReply(localDoc, {parentId: root.id, author: LOCAL_USER, body: text}));
         rerenderOpenThread();
       });
       const resolveBtn = document.createElement("button");
@@ -1159,9 +845,9 @@ function openComposerPopover(line: number, anchorEl: HTMLElement, view: EditorVi
   submit.textContent = "Comment";
   submit.addEventListener("click", () => {
     const text = input.value.trim();
-    if (!text || currentUser === null) return;
+    if (!text) return;
     const charIndex = view.state.doc.line(Math.min(line, view.state.doc.lines)).from;
-    commentMutate(() => addRootComment(localDoc, {charIndex, authorId: currentUser!.id, body: text}));
+    commentMutate(() => addRootComment(localDoc, {charIndex, author: LOCAL_USER, body: text}));
     closeCommentPopover();
   });
   const cancel = document.createElement("button");
@@ -1199,7 +885,7 @@ function renderPanelThread(root: ResolvedComment, replyCount: number): HTMLEleme
   meta.className = "comments-panel-meta";
   const where = root.line === null ? "detached" : `line ${root.line}`;
   const status = root.resolved ? " · resolved" : "";
-  meta.textContent = `${where} · ${authorName(root.authorId)}${status}`;
+  meta.textContent = `${where} · ${root.author}${status}`;
   const body = document.createElement("div");
   body.className = "comments-panel-body";
   body.textContent = root.body;
@@ -1539,8 +1225,6 @@ async function loadState(id: number): Promise<boolean> {
   // Editability now reflects the server's per-document permission, not just being
   // signed in: a viewer gets a read-only editor on someone else's document.
   canEdit = !!state.canEdit;
-  canManageActive = !!state.canManage;
-  updateShareAffordance();
   setEditModeLabel(canEdit);
   createEditor(sharedText.toString());
   ($("toggle-comments") as HTMLButtonElement).hidden = false; // comments are readable by viewers too
@@ -1551,20 +1235,9 @@ async function loadState(id: number): Promise<boolean> {
   return true;
 }
 
-// Whether the current user can manage sharing on the active document (owner/admin).
-let canManageActive = false;
-
-function updateShareAffordance() {
-  ($("share-document") as HTMLButtonElement).hidden = !canManageActive;
-}
-
 function setEditModeLabel(canEditNow: boolean) {
   const el = $("edit-mode");
-  el.textContent = canEditNow
-    ? `Editing as ${currentUser?.name ?? ""}`
-    : currentUser
-      ? "Read-only (no edit access)"
-      : "Read-only — sign in to edit";
+  el.textContent = canEditNow ? `Editing as ${LOCAL_USER}` : "Read-only";
   el.classList.toggle("read-only", !canEditNow);
 }
 
@@ -1575,8 +1248,6 @@ function setDocumentTitle(name: string) {
 
 function showDocumentNotFound() {
   activeDocumentId = undefined;
-  canManageActive = false;
-  updateShareAffordance();
   hideCommentsUi();
   hideActivityUi();
   setDocumentTitle("Document not found");
@@ -1627,8 +1298,6 @@ async function activateDocument(id: number | undefined) {
 // auto-created document; the first one is created explicitly (and owned by them).
 function showWelcome() {
   activeDocumentId = undefined;
-  canManageActive = false;
-  updateShareAffordance();
   hideCommentsUi();
   hideActivityUi();
   setDocumentTitle("Welcome");
@@ -1662,7 +1331,7 @@ async function createDocumentInRoot() {
       headers: {"content-type": "application/json"},
       body: JSON.stringify({name: name.trim()}),
     });
-    if (!$("directory-sidebar").hidden && currentUser) await loadDirectory();
+    if (!$("directory-sidebar").hidden) await loadDirectory();
     openDocument(created.id);
   } catch (error) {
     $("error").textContent = error instanceof Error ? error.message : "Could not create document";
@@ -1681,7 +1350,6 @@ function openDocument(id: number, {push = true}: {push?: boolean} = {}) {
 
 // Back/forward navigation between documents (no new history entry).
 window.addEventListener("popstate", () => {
-  if (!currentUser) return;
   void activateDocument(documentIdFromPath()).catch(() => undefined);
 });
 
@@ -1731,14 +1399,8 @@ function connect(id: number, generation: number) {
   });
 }
 
-// Resolve sign-in state first. Only signed-in users open documents; anonymous
-// visitors see the "Please sign in" screen (rendered by refreshAuth). The document
-// to open comes from the URL (/documents/:id); "/" shows the welcome/empty state.
-refreshAuth()
-  .then(async () => {
-    if (!currentUser) return;
-    await activateDocument(documentIdFromPath());
-  })
+// Open the document named by the URL (/documents/:id); "/" shows the welcome state.
+activateDocument(documentIdFromPath())
   .catch((error: Error) => {
     $("error").textContent = error.message;
     $("error").hidden = false;

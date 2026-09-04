@@ -1,5 +1,4 @@
 import {defineConfig, devices} from "@playwright/test";
-import {authFile} from "./tests/e2e/auth-file";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -14,23 +13,11 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",
   },
-  projects: [
-    {name: "setup", testMatch: /auth\.setup\.ts/},
-    {
-      name: "chromium",
-      // Tests run signed in by default (editing requires a human session); the
-      // signed-out auth tests opt out with an empty storageState.
-      use: {...devices["Desktop Chrome"], storageState: authFile},
-      dependencies: ["setup"],
-    },
-  ],
+  projects: [{name: "chromium", use: {...devices["Desktop Chrome"]}}],
   webServer: {
     // Use a disposable data dir so each run starts from an empty document and
     // persisted state does not leak between runs (see persistence, M10).
-    // AUTH_MODE is pinned: the suite exercises the authenticated surface, and the
-    // server loads .env, so a developer running locally with AUTH_MODE=none would
-    // otherwise see every "rejects an unauthenticated request" test fail.
-    command: "rm -rf .playwright-data && npm run build && DATA_DIR=.playwright-data PORT=4173 AUTH_DEV_LOGIN=1 AUTH_MODE=github npm start",
+    command: "rm -rf .playwright-data && npm run build && DATA_DIR=.playwright-data PORT=4173 npm start",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

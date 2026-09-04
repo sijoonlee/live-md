@@ -1,5 +1,4 @@
-import {expect, test, type Browser, type Page} from "@playwright/test";
-import {authFile} from "./auth-file";
+import {expect, test, type Page} from "@playwright/test";
 import {AgentClient} from "../../src/agent-client.js";
 
 // M8 comments: line-anchored threads stored in the Y.Doc, gutter markers, the thread
@@ -82,89 +81,4 @@ test("reply and resolve: resolving clears the gutter and files it under Resolved
   await expect(panel.locator(".comments-panel-item")).toHaveCount(0);
   await panel.locator("#comments-show-resolved").check();
   await expect(panel.locator(".comments-panel-item.resolved")).toContainText("first thought");
-});
-
-async function signIn(browser: Browser, name: string) {
-  const context = await browser.newContext();
-  await context.request.post("/auth/dev-login", {data: {name, admin: false}});
-  return context;
-}
-
-test("a viewer sees comments read-only; an editor gets the add/reply affordances", async ({browser}) => {
-  const suffix = Date.now();
-  const ownerContext = await signIn(browser, `Owner ${suffix}`);
-  const viewerContext = await signIn(browser, `Viewer ${suffix}`);
-  const owner = await ownerContext.newPage();
-
-  // Owner creates a doc and leaves a comment through the UI.
-  await owner.goto("/");
-  const id = await openNewDocument(owner);
-  await owner.getByTestId("document").locator(".cm-content").fill("shared paragraph");
-  await owner.getByText("shared paragraph").click();
-  await addCommentOnCursorLine(owner, "owner note");
-
-  // Find the viewer's principal id and grant viewer access.
-  const viewerId = (await (await viewerContext.request.get("/api/me")).json()).user.id as number;
-  await owner.evaluate(async ({docId, principalId}) => {
-    await fetch(`/api/documents/${docId}/shares`, {
-      method: "POST", headers: {"content-type": "application/json"},
-      body: JSON.stringify({principalId, level: "viewer"}),
-    });
-  }, {docId: id, principalId: viewerId});
-
-  // The viewer opens the doc: read-only editor, sees the 💬 marker, but no "+" add.
-  const viewer = await viewerContext.newPage();
-  await viewer.goto(`/documents/${id}`);
-  await expect(viewer.getByTestId("document").locator(".cm-content")).not.toBeEditable();
-  await expect(viewer.locator(".cm-comment-gutter-marker")).toBeVisible();
-  await expect(viewer.locator(".cm-comment-gutter-add")).toHaveCount(0);
-
-  // Opening the thread shows the comment but offers no reply/resolve controls.
-  await viewer.locator(".cm-comment-gutter-marker").click();
-  const popover = viewer.locator(".comment-popover");
-  await expect(popover).toContainText("owner note");
-  await expect(popover.getByRole("button", {name: "Reply"})).toHaveCount(0);
-  await expect(popover.getByRole("button", {name: "Resolve"})).toHaveCount(0);
-
-  await ownerContext.close();
-  await viewerContext.close();
-});
-
-test("an agent comment (SDK) shows in the browser, and a browser comment reaches the agent", async ({page, baseURL}) => {
-  await page.goto("/");
-  const id = await openNewDocument(page);
-  await page.getByTestId("document").locator(".cm-content").fill("agent target line\nsecond paragraph");
-
-  // Mint an agent token and grant it editor access to this document.
-  const agentName = `comment-bot-${Date.now()}`;
-  const {token} = await page.evaluate(async (name) => {
-    const created = await (await fetch("/api/tokens", {
-      method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name}),
-    })).json();
-    return created as {token: string};
-  }, agentName);
-  await page.evaluate(async ({docId, name}) => {
-    await fetch(`/api/documents/${docId}/shares`, {
-      method: "POST", headers: {"content-type": "application/json"},
-      body: JSON.stringify({agentName: name, level: "editor"}),
-    });
-  }, {docId: id, name: agentName});
-
-  const agent = new AgentClient({baseUrl: baseURL!, agentId: agentName, token, documentId: id});
-  await agent.load();
-  const commentId = await agent.addComment({line: 1, body: "comment from the agent"});
-  expect(commentId).toBeTruthy();
-
-  // The agent's comment surfaces in the browser panel.
-  await page.getByRole("button", {name: "Comments"}).click();
-  const panel = page.getByTestId("comments-panel");
-  await expect(panel.locator(".comments-panel-item")).toContainText("comment from the agent");
-
-  // A comment added in the browser (on a different, comment-free line) reaches the agent.
-  await page.getByText("second paragraph").click();
-  await addCommentOnCursorLine(page, "comment from the browser");
-  await expect.poll(async () => {
-    await agent.sync();
-    return agent.listComments().some((c) => c.body === "comment from the browser");
-  }, {timeout: 5000}).toBe(true);
 });

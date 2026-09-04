@@ -1,5 +1,4 @@
 import {expect, test, type Page} from "@playwright/test";
-import {authFile} from "./auth-file";
 
 // There is no default document, so editor tests create one (owned by the signed-in
 // user) and open it. Returns the created document id.
@@ -19,8 +18,8 @@ async function openNewDocument(page: Page): Promise<number> {
 
 test("two CodeMirror browser clients converge on the same document", async ({browser}) => {
   // Both clients edit, so both contexts need a signed-in session.
-  const aliceContext = await browser.newContext({storageState: authFile});
-  const bobContext = await browser.newContext({storageState: authFile});
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
   const alice = await aliceContext.newPage();
   const bob = await bobContext.newPage();
 
@@ -164,8 +163,8 @@ test("opens an in-app dialog for creating a folder", async ({page}) => {
 // the document. Asserted behaviourally — type a character and check where it lands —
 // because that is what the person actually experiences.
 test("a remote edit leaves the caret where the person left it", async ({browser}) => {
-  const readerContext = await browser.newContext({storageState: authFile});
-  const writerContext = await browser.newContext({storageState: authFile});
+  const readerContext = await browser.newContext();
+  const writerContext = await browser.newContext();
   const reader = await readerContext.newPage();
   const writer = await writerContext.newPage();
 

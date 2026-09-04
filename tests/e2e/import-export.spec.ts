@@ -237,14 +237,7 @@ test("agent SDK round-trips a document via export then import", async ({page, ba
   await page.getByTestId("document").locator(".cm-content").fill("# Agent export\n\nround trip");
 
   const agentName = `rt-bot-${Date.now()}`;
-  const {token} = await page.evaluate(async (name) =>
-    (await (await fetch("/api/tokens", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name})})).json()),
-    agentName);
-  await page.evaluate(async ({docId, name}) => fetch(`/api/documents/${docId}/shares`, {
-    method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({agentName: name, level: "editor"}),
-  }), {docId: id, name: agentName});
-
-  const agent = new AgentClient({baseUrl: baseURL!, agentId: agentName, token, documentId: id});
+  const agent = new AgentClient({baseUrl: baseURL!, agentId: agentName, documentId: id});
   await expect.poll(async () => (await agent.exportDocument()).bytes.length, {timeout: 5000}).toBeGreaterThan(10);
   const exported = await agent.exportDocument();
   expect(exported.contentType).toContain("text/markdown"); // no attachments -> plain .md
@@ -252,23 +245,6 @@ test("agent SDK round-trips a document via export then import", async ({page, ba
 
   const root = (await agent.listFolders())[0];
   const imported = await agent.importDocument(root.id, exported.bytes, {filename: "agent-copy.md"});
-  const copy = new AgentClient({baseUrl: baseURL!, agentId: agentName, token, documentId: imported.id});
+  const copy = new AgentClient({baseUrl: baseURL!, agentId: agentName, documentId: imported.id});
   expect(await copy.load()).toContain("round trip");
-});
-
-test("export requires read access — a stranger gets 404", async ({browser}) => {
-  const suffix = Date.now();
-  const owner = await browser.newContext();
-  await owner.request.post("/auth/dev-login", {data: {name: `Owner ${suffix}`, admin: false}});
-  const stranger = await browser.newContext();
-  await stranger.request.post("/auth/dev-login", {data: {name: `Stranger ${suffix}`, admin: false}});
-
-  const root = (await (await owner.request.get("/api/folders")).json()).folders[0].id as number;
-  const doc = (await (await owner.request.post(`/api/folders/${root}/documents`, {data: {name: `private-${suffix}.md`}})).json()) as {id: number};
-
-  expect((await owner.request.get(`/api/documents/${doc.id}/export`)).status()).toBe(200);
-  expect((await stranger.request.get(`/api/documents/${doc.id}/export`)).status()).toBe(404);
-
-  await owner.close();
-  await stranger.close();
 });

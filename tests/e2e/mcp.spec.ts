@@ -1,9 +1,8 @@
 import {expect, test, type Page, type APIRequestContext} from "@playwright/test";
 
 // The product claim, end to end: a person has a document open in the browser, an
-// agent works on it from somewhere else entirely (here, over MCP with an agent
-// token — in practice Claude Code in a terminal), and the edit shows up in front of
-// the person without a reload.
+// agent works on it from somewhere else entirely (over MCP — in practice Claude Code
+// in a terminal), and the edit shows up in front of the person without a reload.
 
 const MCP_HEADERS = {"content-type": "application/json", accept: "application/json, text/event-stream"};
 
@@ -11,11 +10,11 @@ const MCP_HEADERS = {"content-type": "application/json", accept: "application/js
 // mode is a plain POST per JSON-RPC message, so no session plumbing is needed.
 async function callTool(
   request: APIRequestContext,
-  token: string,
+  agentId: string,
   name: string,
   args: Record<string, unknown>,
 ): Promise<{text: string; isError: boolean}> {
-  const headers = {...MCP_HEADERS, authorization: `Bearer ${token}`};
+  const headers = {...MCP_HEADERS, "x-agent-id": agentId};
   await request.post("/api/mcp", {
     headers,
     data: {
@@ -33,28 +32,20 @@ async function callTool(
   return {text: body.result.content[0].text, isError: !!body.result.isError};
 }
 
-// Create a document, mint an agent token, and share the document with that agent.
+// Create a document. The agent needs no credential — it names itself for the
+// history log and that is all.
 async function setup(page: Page, agentName: string) {
   await page.goto("/");
-  return page.evaluate(async (name) => {
+  const documentId = await page.evaluate(async () => {
     const root = (await (await fetch("/api/folders")).json()).folders[0];
     const document = await (await fetch(`/api/folders/${root.id}/documents`, {
       method: "POST",
       headers: {"content-type": "application/json"},
       body: JSON.stringify({name: `mcp-${Date.now()}.md`}),
     })).json();
-    const {token} = await (await fetch("/api/tokens", {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify({name}),
-    })).json();
-    await fetch(`/api/documents/${document.id}/shares`, {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify({agentName: name, level: "editor"}),
-    });
-    return {documentId: document.id as number, token: token as string};
-  }, agentName);
+    return document.id as number;
+  });
+  return {documentId, token: agentName};
 }
 
 test("an agent's MCP edit appears live in the browser the person is editing in", async ({page, request}) => {
@@ -102,27 +93,11 @@ test("an anchored edit lands correctly even though the person changed the text a
   await expect(editor).toContainText("considerably longer");
 });
 
-test("an agent may not touch a document it was not shared, and cannot tell it exists", async ({page, request}) => {
-  const {token} = await setup(page, `mcp-stranger-${Date.now()}`);
-  // A second document, never shared with that agent.
-  const secret = await page.evaluate(async () => {
-    const root = (await (await fetch("/api/folders")).json()).folders[0];
-    return (await (await fetch(`/api/folders/${root.id}/documents`, {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify({name: `secret-${Date.now()}.md`}),
-    })).json()) as {id: number};
-  });
-
-  const read = await callTool(request, token, "read_document", {documentId: secret.id});
+test("a document that does not exist is reported as missing", async ({page, request}) => {
+  const {documentId, token} = await setup(page, `mcp-missing-doc-${Date.now()}`);
+  const read = await callTool(request, token, "read_document", {documentId: documentId + 10_000});
   expect(read.isError).toBe(true);
   expect(read.text).toContain("not found");
-
-  // Parse the ids rather than string-matching: a document id can appear
-  // incidentally inside another document's timestamped name.
-  const listed = await callTool(request, token, "list_documents", {});
-  const visibleIds = (JSON.parse(listed.text) as {documentId: number}[]).map((entry) => entry.documentId);
-  expect(visibleIds).not.toContain(secret.id);
 });
 
 test("a missing anchor is reported as a recoverable error, not a silent no-op", async ({page, request}) => {

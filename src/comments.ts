@@ -16,7 +16,7 @@ export type CommentRecord = {
   id: string;
   parentId: string | null; // null = root (carries an anchor); set = reply (no anchor)
   anchor: string | null; // base64 Y.encodeRelativePosition — only on roots
-  authorId: number;
+  author: string;
   body: string;
   createdAt: string;
   resolved?: boolean; // roots only — a thread resolves as a whole
@@ -74,11 +74,17 @@ export const resolveAnchorLine = (doc: Y.Doc, encoded: string): number | null =>
   return line;
 };
 
+const authorLabelFor = (legacyId: unknown): string =>
+  typeof legacyId === "number" ? `#${legacyId}` : "unknown";
+
 const readComment = (map: Y.Map<unknown>): CommentRecord => ({
   id: map.get("id") as string,
   parentId: (map.get("parentId") as string | null) ?? null,
   anchor: (map.get("anchor") as string | null) ?? null,
-  authorId: map.get("authorId") as number,
+  // Comments written by the multi-user build carry a numeric authorId instead of a
+  // label. Fall back rather than showing nothing, so a document opened in this build
+  // keeps its existing threads readable.
+  author: (map.get("author") as string | undefined) ?? authorLabelFor(map.get("authorId")),
   body: map.get("body") as string,
   createdAt: map.get("createdAt") as string,
   resolved: (map.get("resolved") as boolean | undefined) ?? undefined,
@@ -101,14 +107,14 @@ const hasReplies = (doc: Y.Doc, id: string): boolean => {
 // Add a root comment anchored to the line containing `charIndex`. Returns the new id.
 export const addRootComment = (
   doc: Y.Doc,
-  {charIndex, authorId, body}: {charIndex: number; authorId: number; body: string},
+  {charIndex, author, body}: {charIndex: number; author: string; body: string},
 ): string => {
   const id = crypto.randomUUID();
   const map = new Y.Map<unknown>();
   map.set("id", id);
   map.set("parentId", null);
   map.set("anchor", encodeLineAnchor(doc, charIndex));
-  map.set("authorId", authorId);
+  map.set("author", author);
   map.set("body", body);
   map.set("createdAt", new Date().toISOString());
   map.set("resolved", false);
@@ -120,14 +126,14 @@ export const addRootComment = (
 // anchor — their position is their parent, referenced by the stable parent id.
 export const addReply = (
   doc: Y.Doc,
-  {parentId, authorId, body}: {parentId: string; authorId: number; body: string},
+  {parentId, author, body}: {parentId: string; author: string; body: string},
 ): string => {
   const id = crypto.randomUUID();
   const map = new Y.Map<unknown>();
   map.set("id", id);
   map.set("parentId", parentId);
   map.set("anchor", null);
-  map.set("authorId", authorId);
+  map.set("author", author);
   map.set("body", body);
   map.set("createdAt", new Date().toISOString());
   commentsType(doc).push([map]);

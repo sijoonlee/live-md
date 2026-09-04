@@ -16,15 +16,13 @@ const {
   listDocumentsTool,
   readDocumentTool,
 } = await import("../../src/mcp-tools.js");
-const {createAgentPrincipal} = await import("../../src/auth.js");
-const {upsertHumanPrincipal} = await import("../../src/human-auth.js");
-const {createDocument, createFolder, listFolders, setShare} = await import("../../src/directory.js");
+const {createDocument, createFolder, listFolders} = await import("../../src/directory.js");
 const {getLiveDocument} = await import("../../src/document-registry.js");
-const {setPrincipalRole} = await import("../../src/auth.js");
 
 // A stand-in for the server's accept path: applies the update to the live document
 // exactly as acceptUpdate does, without the activity log or the WebSocket fan-out.
 const accepted: {documentId: number; agentId: string; metadata?: Record<string, unknown>}[] = [];
+const AUTHOR = "local";
 const acceptUpdate = (
   documentId: number,
   live: ReturnType<typeof getLiveDocument>,
@@ -36,13 +34,12 @@ const acceptUpdate = (
   return live.applyUpdate(update, agentId, metadata);
 };
 
-const owner = upsertHumanPrincipal("test", "owner", undefined, "owner");
 const rootFolder = listFolders(null)[0];
 // Seed content through the tools themselves, so the fixtures exercise the same
 // path an agent takes.
 const seeded = (name: string, content: string) => {
-  const meta = createDocument(rootFolder.id, name, owner.id);
-  if (content) appendDocumentTool(owner, acceptUpdate, {documentId: meta.id, content});
+  const meta = createDocument(rootFolder.id, name);
+  if (content) appendDocumentTool(AUTHOR, acceptUpdate, {documentId: meta.id, content});
   return meta;
 };
 
@@ -88,49 +85,49 @@ test("resolveAnchor matches across CRLF/LF differences, both directions", () => 
 
 test("edit_document replaces the anchored passage and bumps the version", () => {
   const meta = seeded("edit-target", "# Spec\n\nOld sentence.\n");
-  const before = readDocumentTool(owner, meta.id);
-  const result = editDocumentTool(owner, acceptUpdate, {
+  const before = readDocumentTool(meta.id);
+  const result = editDocumentTool(AUTHOR, acceptUpdate, {
     documentId: meta.id,
     oldString: "Old sentence.",
     newString: "New sentence, much improved.",
   });
-  assert.equal(readDocumentTool(owner, meta.id).content, "# Spec\n\nNew sentence, much improved.\n");
+  assert.equal(readDocumentTool(meta.id).content, "# Spec\n\nNew sentence, much improved.\n");
   assert.ok(result.version > before.version);
 });
 
 test("edit_document with an empty newString deletes the passage", () => {
   const meta = seeded("delete-target", "keep\nDROP THIS\nkeep too\n");
-  editDocumentTool(owner, acceptUpdate, {documentId: meta.id, oldString: "DROP THIS\n", newString: ""});
-  assert.equal(readDocumentTool(owner, meta.id).content, "keep\nkeep too\n");
+  editDocumentTool(AUTHOR, acceptUpdate, {documentId: meta.id, oldString: "DROP THIS\n", newString: ""});
+  assert.equal(readDocumentTool(meta.id).content, "keep\nkeep too\n");
 });
 
 // The point of anchoring: an agent's edit stays valid even though the document
 // changed underneath it, as long as the passage it named is still there.
 test("an edit still lands after someone else edits elsewhere in the document", () => {
   const meta = seeded("concurrent", "## Intro\n\nIntro text.\n\n## Details\n\nDetail text.\n");
-  editDocumentTool(owner, acceptUpdate, {
+  editDocumentTool(AUTHOR, acceptUpdate, {
     documentId: meta.id,
     oldString: "Intro text.",
     newString: "Intro text, expanded by a person while the agent was thinking.",
   });
   // The agent resolved this anchor against the older content; it must still apply.
-  editDocumentTool(owner, acceptUpdate, {
+  editDocumentTool(AUTHOR, acceptUpdate, {
     documentId: meta.id,
     oldString: "Detail text.",
     newString: "Detail text written by the agent.",
   });
-  const {content} = readDocumentTool(owner, meta.id);
+  const {content} = readDocumentTool(meta.id);
   assert.match(content, /expanded by a person/);
   assert.match(content, /written by the agent/);
 });
 
 test("expectedVersion refuses an edit against a document that has moved on", () => {
   const meta = seeded("stale", "content here\n");
-  const stale = readDocumentTool(owner, meta.id).version;
-  appendDocumentTool(owner, acceptUpdate, {documentId: meta.id, content: "a later change\n"});
+  const stale = readDocumentTool(meta.id).version;
+  appendDocumentTool(AUTHOR, acceptUpdate, {documentId: meta.id, content: "a later change\n"});
   assert.throws(
     () =>
-      editDocumentTool(owner, acceptUpdate, {
+      editDocumentTool(AUTHOR, acceptUpdate, {
         documentId: meta.id,
         oldString: "content here",
         newString: "clobbered",
@@ -142,16 +139,14 @@ test("expectedVersion refuses an edit against a document that has moved on", () 
 
 test("append_document adds to the end", () => {
   const meta = seeded("appendable", "first\n");
-  appendDocumentTool(owner, acceptUpdate, {documentId: meta.id, content: "second\n"});
-  assert.equal(readDocumentTool(owner, meta.id).content, "first\nsecond\n");
+  appendDocumentTool(AUTHOR, acceptUpdate, {documentId: meta.id, content: "second\n"});
+  assert.equal(readDocumentTool(meta.id).content, "first\nsecond\n");
 });
 
-test("edits are attributed to the calling principal", () => {
-  const agent = createAgentPrincipal("mcp-attribution-bot");
+test("edits are attributed to the calling agent", () => {
   const meta = seeded("attributed", "text to change\n");
-  setShare(meta.id, agent.id, "editor");
   accepted.length = 0;
-  editDocumentTool(agent, acceptUpdate, {documentId: meta.id, oldString: "change", newString: "keep"});
+  editDocumentTool("mcp-attribution-bot", acceptUpdate, {documentId: meta.id, oldString: "change", newString: "keep"});
   assert.equal(accepted.at(-1)?.agentId, "mcp-attribution-bot");
   assert.equal(accepted.at(-1)?.metadata?.reason, "mcp:edit_document");
 });
@@ -160,67 +155,33 @@ test("edits are attributed to the calling principal", () => {
 
 test("add_comment anchors a comment to a passage without editing it", () => {
   const meta = seeded("commentable", "# Doc\n\nA claim needing a source.\n");
-  const {commentId} = addCommentTool(owner, acceptUpdate, {
+  const {commentId} = addCommentTool(AUTHOR, acceptUpdate, {
     documentId: meta.id,
     anchorText: "A claim needing a source.",
     body: "Where is this from?",
   });
   assert.ok(commentId);
-  assert.equal(readDocumentTool(owner, meta.id).content, "# Doc\n\nA claim needing a source.\n", "text is untouched");
+  assert.equal(readDocumentTool(meta.id).content, "# Doc\n\nA claim needing a source.\n", "text is untouched");
 
-  const comments = listCommentsTool(owner, meta.id);
+  const comments = listCommentsTool(meta.id);
   assert.equal(comments.length, 1);
   assert.equal(comments[0].body, "Where is this from?");
-  assert.equal(comments[0].authorId, owner.id);
+  assert.equal(comments[0].author, AUTHOR);
   assert.equal(comments[0].line, 3, "the comment lands on the commented line");
 });
 
 test("add_comment refuses an ambiguous anchor", () => {
   const meta = seeded("ambiguous-comment", "same\nsame\n");
   assert.throws(
-    () => addCommentTool(owner, acceptUpdate, {documentId: meta.id, anchorText: "same", body: "which one?"}),
+    () => addCommentTool(AUTHOR, acceptUpdate, {documentId: meta.id, anchorText: "same", body: "which one?"}),
     ToolError,
-  );
-});
-
-// --- authorization --------------------------------------------------------
-// Access is the existing choke point, and denial must be indistinguishable from
-// the document not existing, so ids stay unenumerable over MCP too.
-
-test("an unshared document is invisible: not listed, and reads 404 rather than 403", () => {
-  const stranger = createAgentPrincipal("stranger-bot");
-  const meta = seeded("private", "secret plans\n");
-  assert.equal(
-    listDocumentsTool(stranger).some((entry) => entry.documentId === meta.id),
-    false,
-  );
-  assert.throws(
-    () => readDocumentTool(stranger, meta.id),
-    (error: Error) => error instanceof ToolError && /not found/.test(error.message),
-  );
-});
-
-test("a viewer may read but not edit", () => {
-  const viewer = createAgentPrincipal("viewer-bot");
-  const meta = seeded("read-only", "look but do not touch\n");
-  setShare(meta.id, viewer.id, "viewer");
-  assert.match(readDocumentTool(viewer, meta.id).content, /look but do not touch/);
-  assert.throws(
-    () => editDocumentTool(viewer, acceptUpdate, {documentId: meta.id, oldString: "touch", newString: "edit"}),
-    (error: Error) => error instanceof ToolError && /not found/.test(error.message),
   );
 });
 
 test("list_documents reports folder paths so an agent can find a document by name", () => {
   const folder = createFolder("Specs", rootFolder.id);
-  const meta = createDocument(folder.id, "auth-design", owner.id);
-  const entry = listDocumentsTool(owner).find((item) => item.documentId === meta.id);
+  const meta = createDocument(folder.id, "auth-design");
+  const entry = listDocumentsTool().find((item) => item.documentId === meta.id);
   assert.equal(entry?.path, "/Specs/auth-design");
 });
 
-test("an admin sees every document, as elsewhere in the app", () => {
-  const admin = upsertHumanPrincipal("test", "admin", undefined, "admin");
-  setPrincipalRole(admin.id, "admin");
-  const meta = seeded("admin-visible", "anything\n");
-  assert.ok(listDocumentsTool({...admin, role: "admin"}).some((entry) => entry.documentId === meta.id));
-});

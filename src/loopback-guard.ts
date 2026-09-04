@@ -1,20 +1,19 @@
-import {authDisabled} from "./auth-mode.js";
-
-// Guardrail for `AUTH_MODE=none`. With authentication off, anything that can reach
-// the port can read and rewrite every document, so the open mode is only safe bound
-// to the loopback interface — and even there a browser needs holding back.
+// The only thing standing between this server and anything else on the machine.
+// There is no authentication in this build, so anything that can reach the port can
+// read and rewrite every document: it is only safe bound to the loopback interface,
+// and even there a browser needs holding back.
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "::1", "localhost"]);
 
-// Where to listen. In open mode this must be loopback: refuse to start otherwise
-// rather than silently exposing the documents to the network.
-export const resolveBindHost = (configured: string | undefined, disabled = authDisabled): string => {
-  const host = configured?.trim() || (disabled ? "127.0.0.1" : "0.0.0.0");
-  if (disabled && !LOOPBACK_BINDS.has(host)) {
+// Where to listen. Always loopback: refuse to start otherwise rather than silently
+// exposing every document to the network.
+export const resolveBindHost = (configured: string | undefined): string => {
+  const host = configured?.trim() || "127.0.0.1";
+  if (!LOOPBACK_BINDS.has(host)) {
     throw new Error(
-      `AUTH_MODE=none may only bind to loopback, but HOST is "${host}". ` +
-        `Either bind to 127.0.0.1 or set AUTH_MODE=github to require sign-in.`,
+      `This build has no authentication and may only bind to loopback, but HOST is "${host}". ` +
+        `Remove HOST, or use the multi-user build if you need to serve other machines.`,
     );
   }
   return host;

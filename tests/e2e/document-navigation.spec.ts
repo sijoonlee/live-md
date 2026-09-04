@@ -1,6 +1,6 @@
 import {expect, test} from "@playwright/test";
 
-// Signed in via the project storageState. Exercises the M21 phase-2 document UI:
+// Exercises the M21 phase-2 document UI:
 // opening documents from the Explorer, /documents/:id addressing, deep links, and
 // back/forward navigation.
 

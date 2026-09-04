@@ -225505,11 +225505,15 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     for (let i2 = 0; i2 < clamped; i2 += 1) if (s2[i2] === "\n") line2 += 1;
     return line2;
   };
+  var authorLabelFor = (legacyId) => typeof legacyId === "number" ? `#${legacyId}` : "unknown";
   var readComment = (map7) => ({
     id: map7.get("id"),
     parentId: map7.get("parentId") ?? null,
     anchor: map7.get("anchor") ?? null,
-    authorId: map7.get("authorId"),
+    // Comments written by the multi-user build carry a numeric authorId instead of a
+    // label. Fall back rather than showing nothing, so a document opened in this build
+    // keeps its existing threads readable.
+    author: map7.get("author") ?? authorLabelFor(map7.get("authorId")),
     body: map7.get("body"),
     createdAt: map7.get("createdAt"),
     resolved: map7.get("resolved") ?? void 0
@@ -225526,26 +225530,26 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     }
     return false;
   };
-  var addRootComment = (doc3, { charIndex, authorId, body }) => {
+  var addRootComment = (doc3, { charIndex, author, body }) => {
     const id39 = crypto.randomUUID();
     const map7 = new YMap();
     map7.set("id", id39);
     map7.set("parentId", null);
     map7.set("anchor", encodeLineAnchor(doc3, charIndex));
-    map7.set("authorId", authorId);
+    map7.set("author", author);
     map7.set("body", body);
     map7.set("createdAt", (/* @__PURE__ */ new Date()).toISOString());
     map7.set("resolved", false);
     commentsType(doc3).push([map7]);
     return id39;
   };
-  var addReply = (doc3, { parentId, authorId, body }) => {
+  var addReply = (doc3, { parentId, author, body }) => {
     const id39 = crypto.randomUUID();
     const map7 = new YMap();
     map7.set("id", id39);
     map7.set("parentId", parentId);
     map7.set("anchor", null);
-    map7.set("authorId", authorId);
+    map7.set("author", author);
     map7.set("body", body);
     map7.set("createdAt", (/* @__PURE__ */ new Date()).toISOString());
     commentsType(doc3).push([map7]);
@@ -225719,295 +225723,10 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     directorySidebar.hidden = !visible;
     $6("toggle-directory").setAttribute("aria-pressed", String(visible));
     if (!visible) return;
-    renderDirectoryGate();
-    if (currentUser) void loadDirectory();
+    void loadDirectory();
   });
   $6("directory-refresh").addEventListener("click", () => void loadDirectory());
-  $6("directory-signin").addEventListener("click", signIn);
-  $6("signin-screen-button").addEventListener("click", signIn);
-  var currentUser = null;
-  var authMode = "github";
-  var principalNames = /* @__PURE__ */ new Map();
-  async function loadPrincipalNames() {
-    try {
-      const { principals } = await directoryRequest("/api/principals");
-      principalNames.clear();
-      for (const p3 of principals) principalNames.set(p3.id, p3.displayName);
-    } catch {
-    }
-  }
-  var authorName = (id39) => principalNames.get(id39) ?? `#${id39}`;
-  async function refreshAuth() {
-    try {
-      const me3 = await directoryRequest("/api/me");
-      currentUser = me3.user;
-      authMode = me3.authMode ?? "github";
-    } catch {
-      currentUser = null;
-    }
-    if (currentUser) void loadPrincipalNames();
-    renderAuthStatus();
-    renderAppGate();
-    renderTokenGate();
-    renderDirectoryGate();
-  }
-  function renderAppGate() {
-    const signedIn = !!currentUser;
-    $6("signin-screen").hidden = signedIn;
-    $6("app-main").hidden = !signedIn;
-  }
-  function renderDirectoryGate() {
-    const signedIn = !!currentUser;
-    $6("directory-auth-gate").hidden = signedIn;
-    $6("directory-authed").hidden = !signedIn;
-  }
-  function renderAuthStatus() {
-    const editMode = $6("edit-mode");
-    editMode.textContent = currentUser ? `Editing as ${currentUser.name}` : "Read-only \u2014 sign in to edit";
-    editMode.classList.toggle("read-only", !currentUser);
-    const host = $6("auth-status");
-    host.replaceChildren();
-    if (currentUser) {
-      const name2 = document.createElement("span");
-      name2.className = "auth-user";
-      name2.textContent = currentUser.name;
-      if (authMode === "none") return void host.append(name2);
-      const out = document.createElement("button");
-      out.type = "button";
-      out.className = "auth-button";
-      out.textContent = "Sign out";
-      out.addEventListener("click", () => void signOut());
-      host.append(name2, out);
-    } else {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "auth-button";
-      button.textContent = "Sign in with GitHub";
-      button.addEventListener("click", signIn);
-      host.append(button);
-    }
-  }
-  function signIn() {
-    const returnTo = location.pathname + location.search;
-    window.location.href = `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
-  }
-  async function signOut() {
-    await fetch("/auth/logout", { method: "POST" });
-    window.location.reload();
-  }
-  function renderTokenGate() {
-    const signedIn = !!currentUser;
-    $6("token-auth-gate").hidden = signedIn;
-    $6("token-authed").hidden = !signedIn;
-    if (signedIn) void loadTokens();
-  }
-  function formatTokenTime(value2) {
-    return value2 ? new Date(value2).toLocaleString() : "never";
-  }
-  async function loadTokens() {
-    const list = $6("token-list");
-    list.replaceChildren();
-    try {
-      const { tokens: tokens2 } = await directoryRequest("/api/tokens");
-      const active = tokens2.filter((token2) => !token2.revokedAt);
-      if (active.length === 0) {
-        const empty4 = document.createElement("p");
-        empty4.className = "directory-status";
-        empty4.textContent = "No tokens yet";
-        list.append(empty4);
-        return;
-      }
-      for (const token2 of active) {
-        const row = document.createElement("div");
-        row.className = "token-row";
-        const info2 = document.createElement("div");
-        info2.className = "token-info";
-        const name2 = document.createElement("strong");
-        name2.textContent = token2.name;
-        const meta4 = document.createElement("small");
-        meta4.textContent = `created ${formatTokenTime(token2.createdAt)} \xB7 last used ${formatTokenTime(token2.lastUsedAt)}`;
-        info2.append(name2, meta4);
-        const revoke = document.createElement("button");
-        revoke.type = "button";
-        revoke.className = "token-revoke danger-action";
-        revoke.textContent = "Revoke";
-        revoke.addEventListener("click", () => void revokeToken(token2));
-        row.append(info2, revoke);
-        list.append(row);
-      }
-    } catch (error3) {
-      const message = document.createElement("p");
-      message.className = "directory-status directory-error";
-      message.textContent = error3 instanceof Error ? error3.message : "Could not load tokens";
-      list.append(message);
-    }
-  }
-  async function revokeToken(token2) {
-    if (!window.confirm(`Revoke "${token2.name}"? Any agent using it will stop working.`)) return;
-    await directoryRequest(`/api/tokens/${token2.id}`, { method: "DELETE" });
-    await loadTokens();
-  }
-  async function createToken2(event3) {
-    event3.preventDefault();
-    const input = $6("token-name-input");
-    const name2 = input.value.trim();
-    const errorElement = $6("token-create-error");
-    errorElement.hidden = true;
-    if (!name2) {
-      errorElement.textContent = "Enter a token name.";
-      errorElement.hidden = false;
-      return;
-    }
-    try {
-      const { token: token2 } = await directoryRequest("/api/tokens", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: name2 })
-      });
-      input.value = "";
-      $6("token-created-input").value = token2;
-      $6("token-created").hidden = false;
-      await loadTokens();
-    } catch (error3) {
-      errorElement.textContent = error3 instanceof Error ? error3.message : "Could not create token";
-      errorElement.hidden = false;
-    }
-  }
-  async function copyToken() {
-    const input = $6("token-created-input");
-    input.select();
-    try {
-      await navigator.clipboard.writeText(input.value);
-      const button = $6("token-copy");
-      button.textContent = "Copied";
-      setTimeout(() => {
-        button.textContent = "Copy";
-      }, 1500);
-    } catch {
-    }
-  }
-  var tokenSidebar = $6("token-sidebar");
-  $6("toggle-tokens").addEventListener("click", () => {
-    const visible = tokenSidebar.hidden;
-    tokenSidebar.hidden = !visible;
-    $6("toggle-tokens").setAttribute("aria-pressed", String(visible));
-    if (visible) void refreshAuth();
-  });
-  $6("token-refresh").addEventListener("click", () => void refreshAuth());
-  $6("token-signin").addEventListener("click", signIn);
-  $6("token-create-form").addEventListener("submit", (event3) => void createToken2(event3));
-  $6("token-copy").addEventListener("click", () => void copyToken());
-  $6("token-created-done").addEventListener("click", () => {
-    $6("token-created").hidden = true;
-    $6("token-created-input").value = "";
-  });
-  async function openShareDialog() {
-    if (activeDocumentId === void 0 || !canManageActive) return;
-    $6("share-error").hidden = true;
-    await loadShares();
-    $6("share-dialog").hidden = false;
-  }
-  async function loadShareCandidates() {
-    const select = $6("share-principal");
-    const addButton = $6("share-add");
-    select.replaceChildren();
-    try {
-      const { candidates } = await directoryRequest(`/api/documents/${activeDocumentId}/share-candidates`);
-      if (candidates.length === 0) {
-        const option2 = document.createElement("option");
-        option2.value = "";
-        option2.textContent = "No one else to add";
-        select.append(option2);
-        select.disabled = true;
-        addButton.disabled = true;
-        return;
-      }
-      select.disabled = false;
-      addButton.disabled = false;
-      for (const candidate of candidates) {
-        const option2 = document.createElement("option");
-        option2.value = String(candidate.principalId);
-        option2.textContent = `${candidate.displayName}${candidate.kind === "agent" ? " (agent)" : ""}`;
-        select.append(option2);
-      }
-    } catch {
-      select.replaceChildren();
-      select.disabled = true;
-      addButton.disabled = true;
-    }
-  }
-  async function loadShares() {
-    const list = $6("share-list");
-    list.replaceChildren();
-    await loadShareCandidates();
-    try {
-      const data7 = await directoryRequest(`/api/documents/${activeDocumentId}/shares`);
-      const ownerRow = document.createElement("div");
-      ownerRow.className = "share-row share-owner";
-      const ownerName = document.createElement("span");
-      ownerName.textContent = data7.owner ? data7.owner.displayName : "This app (legacy document)";
-      const ownerBadge = document.createElement("em");
-      ownerBadge.textContent = "owner";
-      ownerRow.append(ownerName, ownerBadge);
-      list.append(ownerRow);
-      if (data7.shares.length === 0) {
-        const empty4 = document.createElement("p");
-        empty4.className = "directory-status";
-        empty4.textContent = "No one else has access.";
-        list.append(empty4);
-      }
-      for (const share of data7.shares) {
-        const row = document.createElement("div");
-        row.className = "share-row";
-        const name2 = document.createElement("span");
-        name2.textContent = `${share.displayName}${share.kind === "agent" ? " (agent)" : ""}`;
-        const level = document.createElement("em");
-        level.textContent = share.level;
-        const remove4 = document.createElement("button");
-        remove4.type = "button";
-        remove4.className = "token-revoke danger-action";
-        remove4.textContent = "Remove";
-        remove4.addEventListener("click", () => void removeShareEntry(share.principalId));
-        row.append(name2, level, remove4);
-        list.append(row);
-      }
-    } catch (error3) {
-      const message = document.createElement("p");
-      message.className = "directory-status directory-error";
-      message.textContent = error3 instanceof Error ? error3.message : "Could not load sharing";
-      list.append(message);
-    }
-  }
-  async function addShare(event3) {
-    event3.preventDefault();
-    const principalId = Number($6("share-principal").value);
-    const level = $6("share-level").value;
-    $6("share-error").hidden = true;
-    if (!principalId) return;
-    try {
-      await directoryRequest(`/api/documents/${activeDocumentId}/shares`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ principalId, level })
-      });
-      await loadShares();
-    } catch (error3) {
-      $6("share-error").textContent = error3 instanceof Error ? error3.message : "Could not add access";
-      $6("share-error").hidden = false;
-    }
-  }
-  async function removeShareEntry(principalId) {
-    await directoryRequest(`/api/documents/${activeDocumentId}/shares/${principalId}`, { method: "DELETE" });
-    await loadShares();
-  }
-  $6("share-document").addEventListener("click", () => void openShareDialog());
-  $6("share-close").addEventListener("click", () => {
-    $6("share-dialog").hidden = true;
-  });
-  $6("share-dialog").addEventListener("click", (event3) => {
-    if (event3.target === $6("share-dialog")) $6("share-dialog").hidden = true;
-  });
-  $6("share-add-form").addEventListener("submit", (event3) => void addShare(event3));
+  var LOCAL_USER = "local";
   $6("toggle-comments").addEventListener("click", () => toggleCommentsPanel());
   $6("toggle-activity").addEventListener("click", () => toggleActivityPanel());
   $6("comments-show-resolved").addEventListener("change", (event3) => {
@@ -226505,7 +226224,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     entry.style.marginLeft = `${depth * 14}px`;
     const meta4 = document.createElement("div");
     meta4.className = "comment-meta";
-    meta4.textContent = `${authorName(comment3.authorId)} \xB7 ${formatTime(comment3.createdAt)}`;
+    meta4.textContent = `${comment3.author} \xB7 ${formatTime(comment3.createdAt)}`;
     const body = document.createElement("div");
     body.className = "comment-body";
     body.textContent = comment3.body;
@@ -226564,8 +226283,8 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
         replyBtn.textContent = "Reply";
         replyBtn.addEventListener("click", () => {
           const text5 = reply.value.trim();
-          if (!text5 || currentUser === null) return;
-          commentMutate(() => addReply(localDoc, { parentId: root4.id, authorId: currentUser.id, body: text5 }));
+          if (!text5) return;
+          commentMutate(() => addReply(localDoc, { parentId: root4.id, author: LOCAL_USER, body: text5 }));
           rerenderOpenThread();
         });
         const resolveBtn = document.createElement("button");
@@ -226609,9 +226328,9 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     submit.textContent = "Comment";
     submit.addEventListener("click", () => {
       const text5 = input.value.trim();
-      if (!text5 || currentUser === null) return;
+      if (!text5) return;
       const charIndex = view.state.doc.line(Math.min(line2, view.state.doc.lines)).from;
-      commentMutate(() => addRootComment(localDoc, { charIndex, authorId: currentUser.id, body: text5 }));
+      commentMutate(() => addRootComment(localDoc, { charIndex, author: LOCAL_USER, body: text5 }));
       closeCommentPopover();
     });
     const cancel = document.createElement("button");
@@ -226641,7 +226360,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     meta4.className = "comments-panel-meta";
     const where = root4.line === null ? "detached" : `line ${root4.line}`;
     const status = root4.resolved ? " \xB7 resolved" : "";
-    meta4.textContent = `${where} \xB7 ${authorName(root4.authorId)}${status}`;
+    meta4.textContent = `${where} \xB7 ${root4.author}${status}`;
     const body = document.createElement("div");
     body.className = "comments-panel-body";
     body.textContent = root4.body;
@@ -226936,8 +226655,6 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     highlightActiveDocument();
     applyUpdate(localDoc, decode(state4.update), "remote");
     canEdit = !!state4.canEdit;
-    canManageActive = !!state4.canManage;
-    updateShareAffordance();
     setEditModeLabel(canEdit);
     createEditor(sharedText.toString());
     $6("toggle-comments").hidden = false;
@@ -226947,13 +226664,9 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     renderMetadata(state4);
     return true;
   }
-  var canManageActive = false;
-  function updateShareAffordance() {
-    $6("share-document").hidden = !canManageActive;
-  }
   function setEditModeLabel(canEditNow) {
     const el = $6("edit-mode");
-    el.textContent = canEditNow ? `Editing as ${currentUser?.name ?? ""}` : currentUser ? "Read-only (no edit access)" : "Read-only \u2014 sign in to edit";
+    el.textContent = canEditNow ? `Editing as ${LOCAL_USER}` : "Read-only";
     el.classList.toggle("read-only", !canEditNow);
   }
   function setDocumentTitle(name2) {
@@ -226962,8 +226675,6 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   }
   function showDocumentNotFound() {
     activeDocumentId = void 0;
-    canManageActive = false;
-    updateShareAffordance();
     hideCommentsUi();
     hideActivityUi();
     setDocumentTitle("Document not found");
@@ -227009,8 +226720,6 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   }
   function showWelcome() {
     activeDocumentId = void 0;
-    canManageActive = false;
-    updateShareAffordance();
     hideCommentsUi();
     hideActivityUi();
     setDocumentTitle("Welcome");
@@ -227042,7 +226751,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: name2.trim() })
       });
-      if (!$6("directory-sidebar").hidden && currentUser) await loadDirectory();
+      if (!$6("directory-sidebar").hidden) await loadDirectory();
       openDocument(created.id);
     } catch (error3) {
       $6("error").textContent = error3 instanceof Error ? error3.message : "Could not create document";
@@ -227057,7 +226766,6 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     });
   }
   window.addEventListener("popstate", () => {
-    if (!currentUser) return;
     void activateDocument(documentIdFromPath()).catch(() => void 0);
   });
   function applyRemoteUpdate(update2) {
@@ -227104,10 +226812,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
       }
     });
   }
-  refreshAuth().then(async () => {
-    if (!currentUser) return;
-    await activateDocument(documentIdFromPath());
-  }).catch((error3) => {
+  activateDocument(documentIdFromPath()).catch((error3) => {
     $6("error").textContent = error3.message;
     $6("error").hidden = false;
   });
