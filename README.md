@@ -125,6 +125,28 @@ same `can()` choke point: an agent sees only documents shared with it, and anyth
                             "headers": {"X-Agent-Id": "claude-code"}}}}
 ```
 
+## VS Code extension
+
+`vscode-extension/` hosts the browser client in a VS Code webview panel, so a document
+sits in a tab beside your code and an agent terminal.
+
+```bash
+cd vscode-extension && npm install && npm run build
+```
+
+Then press <kbd>F5</kbd> from the repository root (a launch configuration is included) and
+run **live-md: Open** in the new window. `liveMd.url` points it at the server
+(`http://localhost:3000` by default); with `AUTH_MODE=none` there is no sign-in step.
+
+The extension exists for one reason: `retainContextWhenHidden`. VS Code's built-in Simple
+Browser shows the same page with no code at all, but its webview is torn down when the tab
+is hidden and rebuilt when shown — so switching to the terminal and back reloads the page
+and loses the caret, selection, and scroll position mid-edit. This panel keeps its context
+alive instead.
+
+There is no bridge to a VS Code `TextDocument` and no second replica of the text: live-md
+documents are not files, and the webview runs the existing client unchanged.
+
 ## Agent SDK
 
 Prefer MCP above for agents that speak it. `AgentClient` (`src/agent-client.ts`) is a

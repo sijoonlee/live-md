@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Press F5 to open a second VS Code window with the live-md extension loaded,
+      // then run "live-md: Open" from the command palette. Build it first with
+      // `npm run build` in vscode-extension/ (the extension is bundled, not compiled
+      // in place, so an unbuilt dist/ is the usual reason nothing happens).
+      "name": "Run live-md extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/vscode-extension"],
+      "outFiles": ["${workspaceFolder}/vscode-extension/dist/**/*.js"]
+    }
+  ]
+}
