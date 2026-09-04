@@ -88,6 +88,9 @@ you would rather copy one.
 | Tool | |
 | --- | --- |
 | `list_documents` | documents this agent can read, with folder paths |
+| `create_document` | create one, optionally with initial content |
+| `rename_document` | rename in place |
+| `move_document` | move into another directory |
 | `read_document` | Markdown content plus a `version` for optimistic concurrency |
 | `edit_document` | replace an exact passage (`oldString` → `newString`) |
 | `append_document` | append to the end |

@@ -1,12 +1,12 @@
 import * as Y from "yjs";
 import type {LiveDocument} from "./document.js";
-import {getDocument, listDocuments, type DirectoryDocument} from "./directory.js";
+import {createDocument, getDocument, listDocuments, moveDocument, renameDocument, type DirectoryDocument} from "./directory.js";
 import {getLiveDocument} from "./document-registry.js";
 import {addReply, addRootComment, deleteComment as removeComment, listComments, setResolved} from "./comments.js";
 import {readFileSync, statSync, writeFileSync} from "node:fs";
 import {basename, join} from "node:path";
 import {deleteFile, getFileMetadata, listFiles, saveFile} from "./files.js";
-import {buildExport, guessMimeType, importBundle} from "./export-import.js";
+import {buildExport, guessMimeType, importBundle, seedDocumentContent} from "./export-import.js";
 import {createFolder, getFolder, listFolders, moveFolder, renameFolder} from "./directory.js";
 
 // The document operations behind the MCP tools. Kept apart from the transport in
@@ -452,4 +452,37 @@ export const moveDirectoryTool = (args: {directoryId: number; parentDirectoryId:
   // which would detach the subtree from the tree entirely.
   const moved = named(() => moveFolder(args.directoryId, args.parentDirectoryId), "directory");
   return {directoryId: moved.id, name: moved.name, parentDirectoryId: moved.parentFolderId};
+};
+
+// --- documents ------------------------------------------------------------
+
+export const createDocumentTool = (
+  author: string,
+  acceptUpdate: AcceptUpdate,
+  args: {name: string; directoryId?: number; content?: string},
+) => {
+  const name = directoryName(args.name);
+  const parentId = args.directoryId ?? rootFolderId();
+  requireDirectory(parentId);
+  const created = named(() => createDocument(parentId, name), "document");
+  // Optional seed content rides the normal accept path, so a document created with
+  // a body is persisted, broadcast and logged exactly like one edited afterwards.
+  if (args.content) {
+    seedDocumentContent(created.id, getLiveDocument(created.id), args.content, author, acceptUpdate);
+  }
+  return {documentId: created.id, name: created.name, directoryId: created.folderId};
+};
+
+export const renameDocumentTool = (args: {documentId: number; name: string}) => {
+  requireDocument(args.documentId);
+  const name = directoryName(args.name);
+  const renamed = named(() => renameDocument(args.documentId, name), "document");
+  return {documentId: renamed.id, name: renamed.name};
+};
+
+export const moveDocumentTool = (args: {documentId: number; directoryId: number}) => {
+  requireDocument(args.documentId);
+  requireDirectory(args.directoryId);
+  const moved = named(() => moveDocument(args.documentId, args.directoryId), "document");
+  return {documentId: moved.id, name: moved.name, directoryId: moved.folderId};
 };

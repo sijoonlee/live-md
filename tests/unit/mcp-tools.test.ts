@@ -27,6 +27,9 @@ const {
   createDirectoryTool,
   renameDirectoryTool,
   moveDirectoryTool,
+  createDocumentTool,
+  renameDocumentTool,
+  moveDocumentTool,
 } = await import("../../src/mcp-tools.js");
 const {createDocument, createFolder, listFolders} = await import("../../src/directory.js");
 const {getLiveDocument} = await import("../../src/document-registry.js");
@@ -401,4 +404,61 @@ test("directory tools report an unknown id", () => {
   assert.throws(() => renameDirectoryTool({directoryId: 9999, name: "x"}), ToolError);
   assert.throws(() => moveDirectoryTool({directoryId: 9999, parentDirectoryId: 1}), ToolError);
   assert.throws(() => createDirectoryTool({name: "orphan", parentDirectoryId: 9999}), ToolError);
+});
+
+// --- document placement ---------------------------------------------------
+
+test("create_document makes an empty document at the root by default", () => {
+  const created = createDocumentTool(AUTHOR, acceptUpdate, {name: "fresh.md"});
+  assert.equal(created.name, "fresh.md");
+  assert.equal(readDocumentTool(created.documentId).content, "");
+  assert.ok(listDocumentsTool().some((d) => d.documentId === created.documentId));
+});
+
+test("create_document seeds content through the normal accept path", () => {
+  accepted.length = 0;
+  const created = createDocumentTool(AUTHOR, acceptUpdate, {
+    name: "seeded.md",
+    content: "# Seeded\n\nbody\n",
+  });
+  assert.equal(readDocumentTool(created.documentId).content, "# Seeded\n\nbody\n");
+  // Seeding is an ordinary accepted update, so it is attributed and logged.
+  assert.equal(accepted.at(-1)?.documentId, created.documentId);
+  assert.equal(accepted.at(-1)?.agentId, AUTHOR);
+});
+
+test("create_document places a document in a named directory", () => {
+  const dir = createDirectoryTool({name: "Placed"});
+  const created = createDocumentTool(AUTHOR, acceptUpdate, {name: "inside.md", directoryId: dir.directoryId});
+  assert.equal(created.directoryId, dir.directoryId);
+  assert.equal(listDocumentsTool().find((d) => d.documentId === created.documentId)?.path, "/Placed/inside.md");
+});
+
+test("rename_document keeps the document's id and content", () => {
+  const created = createDocumentTool(AUTHOR, acceptUpdate, {name: "old-name.md", content: "unchanged\n"});
+  const renamed = renameDocumentTool({documentId: created.documentId, name: "new-name.md"});
+  assert.equal(renamed.documentId, created.documentId);
+  assert.equal(renamed.name, "new-name.md");
+  assert.equal(readDocumentTool(created.documentId).content, "unchanged\n");
+});
+
+test("move_document changes only its placement", () => {
+  const dir = createDirectoryTool({name: "Destination"});
+  const created = createDocumentTool(AUTHOR, acceptUpdate, {name: "movable.md", content: "stays\n"});
+  const moved = moveDocumentTool({documentId: created.documentId, directoryId: dir.directoryId});
+  assert.equal(moved.directoryId, dir.directoryId);
+  assert.equal(listDocumentsTool().find((d) => d.documentId === created.documentId)?.path, "/Destination/movable.md");
+  assert.equal(readDocumentTool(created.documentId).content, "stays\n");
+});
+
+test("document placement tools report collisions and unknown ids", () => {
+  const dir = createDirectoryTool({name: "Collide"});
+  createDocumentTool(AUTHOR, acceptUpdate, {name: "same.md", directoryId: dir.directoryId});
+  assert.throws(
+    () => createDocumentTool(AUTHOR, acceptUpdate, {name: "same.md", directoryId: dir.directoryId}),
+    (error: Error) => error instanceof ToolError && /already exists/.test(error.message),
+  );
+  assert.throws(() => createDocumentTool(AUTHOR, acceptUpdate, {name: "x.md", directoryId: 9999}), ToolError);
+  assert.throws(() => renameDocumentTool({documentId: 9999, name: "x.md"}), ToolError);
+  assert.throws(() => moveDocumentTool({documentId: 9999, directoryId: dir.directoryId}), ToolError);
 });

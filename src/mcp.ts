@@ -19,6 +19,9 @@ import {
   renameDirectoryTool,
   moveDirectoryTool,
   listDocumentsTool,
+  createDocumentTool,
+  renameDocumentTool,
+  moveDocumentTool,
   readDocumentTool,
   replyToCommentTool,
   resolveCommentTool,
@@ -83,6 +86,42 @@ export const createMcpServer = (author: string, acceptUpdate: AcceptUpdate): Mcp
       annotations: {readOnlyHint: true},
     },
     async () => run(() => listDocumentsTool()),
+  );
+
+  server.registerTool(
+    "create_document",
+    {
+      title: "Create a document",
+      description:
+        "Create a document, at the root unless a directory is given. Pass content to start it " +
+        "with a body; otherwise it begins empty and append_document fills it.",
+      inputSchema: {
+        name: z.string().min(1).describe("name for the new document, e.g. \"design-review.md\""),
+        directoryId: directoryId.optional().describe("where to create it; defaults to the root"),
+        content: z.string().optional().describe("initial Markdown"),
+      },
+    },
+    async (args) => run(() => createDocumentTool(author, acceptUpdate, args)),
+  );
+
+  server.registerTool(
+    "rename_document",
+    {
+      title: "Rename a document",
+      description: "Rename a document. Its id, content and comments are unaffected.",
+      inputSchema: {documentId, name: z.string().min(1).describe("the new name")},
+    },
+    async (args) => run(() => renameDocumentTool(args)),
+  );
+
+  server.registerTool(
+    "move_document",
+    {
+      title: "Move a document",
+      description: "Move a document into another directory.",
+      inputSchema: {documentId, directoryId: directoryId.describe("the directory to move it into")},
+    },
+    async (args) => run(() => moveDocumentTool(args)),
   );
 
   server.registerTool(
