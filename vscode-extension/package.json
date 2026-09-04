@@ -1,5 +1,6 @@
 {
   "name": "live-md-vscode",
+  "publisher": "local",
   "displayName": "live-md",
   "description": "Edit live-md documents inside VS Code, alongside an agent working on the same document.",
   "version": "0.1.0",

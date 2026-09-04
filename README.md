@@ -137,8 +137,18 @@ npm run build:extension
 The extension has no toolchain or dependencies of its own — its `package.json` is a VS Code
 manifest, and the root project builds it — so there is no second `npm install`.
 
-Then press <kbd>F5</kbd> from the repository root (a launch configuration is included) and
-run **live-md: Open** in the new window. `liveMd.url` points it at the server
+To try it without installing, press <kbd>F5</kbd> from the repository root (a launch
+configuration is included) and run **live-md: Open** in the new window.
+
+To install it into VS Code proper:
+
+```bash
+./vscode-extension/install.sh          # then reload the window
+./vscode-extension/install.sh --remove # to uninstall
+```
+
+That copies the extension where VS Code looks for extensions, which needs no packaging
+step and no downloads. `liveMd.url` points it at the server
 (`http://localhost:3000` by default); with `AUTH_MODE=none` there is no sign-in step.
 
 The extension exists for one reason: `retainContextWhenHidden`. VS Code's built-in Simple
