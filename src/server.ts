@@ -27,7 +27,6 @@ import {authorFrom, LOCAL_AUTHOR} from "./author.js";
 import {loopbackRejection, noteRejection, resolveBindHost} from "./loopback-guard.js";
 import {mcpHandler} from "./mcp.js";
 import {buildExport, importBundle, TransferError} from "./export-import.js";
-import {createRateLimiter} from "./rate-limit.js";
 import {
   MAX_FILE_BYTES,
   FileValidationError,
@@ -103,11 +102,10 @@ const acceptUpdate = (
   agentId: string,
   update: Uint8Array,
   metadata?: Record<string, unknown>,
-  requestId?: string,
 ) => {
-  const nextRevision = live.applyUpdate(update, agentId, metadata, requestId);
-  // Durable activity record + server-minted update id (M11/M12). Author is the
-  // server-set principal, never client-supplied. Separate from the compactable CRDT log.
+  const nextRevision = live.applyUpdate(update, agentId, metadata);
+  // Durable activity record + server-minted update id. The author label is set by
+  // the server from the request. Separate from the compactable CRDT log.
   const activityId = recordActivity({documentId, revision: nextRevision, authorLabel: agentId, metadata});
   broadcastToDocument(documentId, {
     type: "document_update",
@@ -169,48 +167,23 @@ const sendDocumentState = (id: number, res: express.Response) => {
   const doc = loadDocument(id, res);
   if (!doc) return;
   // documentId + name let the client title the document without a second request;
-  // canEdit drives editor editability; canManage reveals the Share affordance.
+  // canEdit is always true here; the field stays so the client reads the same in
+  // both builds.
   res.json({
     documentId: doc.id,
     name: doc.meta.name,
       // Everyone who reaches this server may edit. The flags stay in the payload so the
     // browser client is identical between this build and the multi-user one.
     canEdit: true,
-    canManage: true,
     update: toBase64(doc.live.encodeState()),
     stateVector: toBase64(doc.live.encodeStateVector()),
     ...doc.live.getMetadata(),
   });
 };
 
-const syncDocument = (id: number, req: express.Request, res: express.Response) => {
-  const doc = loadDocument(id, res);
-  if (!doc) return;
-  try {
-    const stateVector = fromBase64(req.body?.stateVector);
-    res.json({update: toBase64(doc.live.encodeMissingState(stateVector)), ...doc.live.getMetadata()});
-  } catch (error) {
-    res.status(400).json({error: error instanceof Error ? error.message : "invalid state vector"});
-  }
-};
-
-const sendDocumentUpdates = (id: number, res: express.Response) => {
-  const doc = loadDocument(id, res);
-  if (!doc) return;
-  res.json({updates: doc.live.getUpdates(), revision: doc.live.getRevision()});
-};
-
 app.get("/api/documents/:documentId/state", (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id !== undefined) sendDocumentState(id, res);
-});
-app.post("/api/documents/:documentId/sync", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) syncDocument(id, req, res);
-});
-app.get("/api/documents/:documentId/updates", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) sendDocumentUpdates(id, res);
 });
 
 // Durable activity/history for a document (M12): a newest-first, cursor-paged feed of
@@ -320,52 +293,13 @@ app.get("/api/documents/:documentId/export", (req, res) => {
   return res.end(Buffer.from(result.bytes));
 });
 
-// Write rate limit: ~20 updates/sec sustained, burst of 40. Not a security control
-// here — just a guard against a runaway client filling the update log.
-const writeLimiter = createRateLimiter({capacity: 40, refillPerSec: 20});
-
-const submitDocumentUpdate = (id: number, req: express.Request, res: express.Response) => {
-  const doc = loadDocument(id, res);
-  if (!doc) return;
-  // The author labels the edit; it does not authorize it.
-  const agentId = authorFrom(req.headers);
-  if (!writeLimiter.allow(agentId)) {
-    return res.status(429).json({error: "rate limit exceeded; slow down"});
-  }
-  const requestId = typeof req.body?.requestId === "string" ? req.body.requestId : undefined;
-  if (requestId && (requestId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(requestId))) {
-    return res.status(400).json({error: "requestId contains invalid characters or is too long"});
-  }
-  // Restart-durable idempotency: a retried requestId resolves against the persisted
-  // update row (M11 leftover), so a retry after a server restart returns the original
-  // response instead of applying the update a second time.
-  if (requestId) {
-    const prior = doc.live.findProcessedRequest(requestId);
-    if (prior) return res.json(prior);
-  }
-
-  try {
-    const update = fromBase64(req.body?.update);
-    const nextRevision = acceptUpdate(doc.id, doc.live, agentId, update, req.body?.metadata, requestId);
-    return res.status(202).json({...doc.live.getMetadata(), revision: nextRevision});
-  } catch (error) {
-    return res.status(400).json({error: error instanceof Error ? error.message : "invalid update"});
-  }
-};
-
-app.post("/api/documents/:documentId/updates", (req, res) => {
-  const id = parseDocumentId(req.params.documentId, res);
-  if (id !== undefined) submitDocumentUpdate(id, req, res);
-});
-
 // Raw-body upload: the request body is the file bytes and the Content-Type header
 // names the format. This avoids base64 overhead and needs no multipart parser.
 // Global express.json() only consumes application/json, so it does not read the
 // stream before this route's raw parser does.
 const rawFileBody = express.raw({type: () => true, limit: MAX_FILE_BYTES});
 
-// Attach a file to a document. Adding an attachment is editing the document, so it
-// requires WRITE on the doc; the bytes are the raw request body.
+// Attach a file to a document; the bytes are the raw request body.
 app.post("/api/documents/:documentId/files", rawFileBody, (req, res) => {
   const id = parseDocumentId(req.params.documentId, res);
   if (id === undefined) return;
@@ -464,10 +398,10 @@ app.delete("/api/files/:id", (req, res) => {
 
 // Redirect to GitHub for sign-in. A random state in a short-lived cookie is
 // checked on callback to prevent CSRF.
-// Who the browser is, as far as this build is concerned. Kept so the client's
-// startup path is unchanged; there is nobody to sign in or out as.
+// Who the browser is, as far as this build is concerned. There is nobody to sign in
+// or out as; the client shows this name beside the editor.
 app.get("/api/me", (_req, res) => {
-  res.json({user: {name: LOCAL_AUTHOR}, authMode: "none"});
+  res.json({user: {name: LOCAL_AUTHOR}});
 });
 
 websocketServer.on("connection", (socket, request) => {
@@ -501,7 +435,6 @@ websocketServer.on("connection", (socket, request) => {
     ...live.getMetadata(),
     cursors: live.getCursors(),
     canEdit: true,
-    canManage: true,
   }));
   socket.on("close", () => leaveRoom(documentId, socket));
   socket.on("message", (raw) => {

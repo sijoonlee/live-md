@@ -80,7 +80,7 @@ export const createLiveDocument = (persistence: Persistence) => {
   const encodeStateVector = () => Y.encodeStateVector(doc);
   const encodeMissingState = (stateVector: Uint8Array) => Y.encodeStateAsUpdate(doc, stateVector);
 
-  const applyUpdate = (update: Uint8Array, agentId: string, metadata?: Record<string, unknown>, requestId?: string) => {
+  const applyUpdate = (update: Uint8Array, agentId: string, metadata?: Record<string, unknown>) => {
     if (update.byteLength > MAX_UPDATE_BYTES) {
       throw new Error(`update exceeds the ${MAX_UPDATE_BYTES}-byte limit`);
     }
@@ -96,7 +96,7 @@ export const createLiveDocument = (persistence: Persistence) => {
     lastUpdatedBy = agentId;
     updates.push({revision, agentId, receivedAt: updatedAt, metadata});
     if (updates.length > MAX_UPDATE_HISTORY) updates.shift();
-    persistence.appendUpdate(revision, update, agentId, metadata, requestId);
+    persistence.appendUpdate(revision, update, agentId, metadata);
     updatesSinceSnapshot += 1;
     if (updatesSinceSnapshot >= SNAPSHOT_EVERY_UPDATES) snapshotAndCompact();
     return revision;
@@ -111,14 +111,6 @@ export const createLiveDocument = (persistence: Persistence) => {
   };
 
   const getUpdates = () => [...updates];
-
-  // Restart-durable idempotency: has an update with this requestId already been
-  // accepted (and persisted)? Returns the original accept response fields, so a retry
-  // gets the same answer without re-applying. Backed by the persisted update row.
-  const findProcessedRequest = (requestId: string) => {
-    const found = persistence.findByRequestId(requestId);
-    return found ? {revision: found.revision, updatedAt: found.createdAt, lastUpdatedBy: found.agentId ?? undefined} : undefined;
-  };
 
   const upsertCursor = (
     agentId: string,
@@ -157,7 +149,6 @@ export const createLiveDocument = (persistence: Persistence) => {
     applyUpdate,
     snapshotAndCompact,
     getUpdates,
-    findProcessedRequest,
     upsertCursor,
     getCursors,
     removeStaleCursors,

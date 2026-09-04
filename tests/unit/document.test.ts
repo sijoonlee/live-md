@@ -40,21 +40,6 @@ test("a live document rehydrates its own stream after a restart", () => {
   assert.equal(other.getText(), "");
 });
 
-test("a processed requestId is found after a restart, so retries don't double-apply", () => {
-  const db = new DatabaseSync(":memory:");
-  const first = createLiveDocument(createPersistence(db, "1"));
-  first.applyUpdate(updateInserting("hello"), "agent-a", {reason: "x"}, "req-abc");
-  assert.equal(first.getRevision(), 1);
-
-  // Simulate a server restart: a fresh live document over the same db + key.
-  const restarted = createLiveDocument(createPersistence(db, "1"));
-  const prior = restarted.findProcessedRequest("req-abc");
-  assert.equal(prior?.revision, 1);
-  assert.equal(prior?.lastUpdatedBy, "agent-a");
-  // An unseen requestId is not found, so a genuine new update would proceed.
-  assert.equal(restarted.findProcessedRequest("req-new"), undefined);
-});
-
 test("cursors are scoped to a single live document", () => {
   const db = new DatabaseSync(":memory:");
   const a = createLiveDocument(createPersistence(db, "1"));

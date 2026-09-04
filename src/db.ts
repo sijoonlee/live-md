@@ -34,4 +34,10 @@ for (const table of ["document_shares", "api_tokens", "sessions", "human_identit
 }
 if (tableExists("documents")) dropColumnIfPresent("documents", "owner_id");
 if (tableExists("document_activity")) dropColumnIfPresent("document_activity", "author_id");
+// document_updates.request_id backed idempotency for an HTTP write endpoint that no
+// longer exists; the browser writes over the WebSocket and agents go through MCP.
+if (tableExists("document_updates")) {
+  database.exec("DROP INDEX IF EXISTS idx_document_updates_request");
+  dropColumnIfPresent("document_updates", "request_id");
+}
 database.exec("PRAGMA foreign_keys = ON;");

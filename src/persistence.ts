@@ -51,26 +51,12 @@ export const createPersistence = (db: DatabaseSync, documentKey = "prototype") =
       update_blob BLOB NOT NULL,
       agent_id TEXT,
       metadata TEXT,
-      created_at TEXT NOT NULL,
-      request_id TEXT
+      created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_document_updates_key_rev
       ON document_updates(document_key, revision);
   `);
 
-  // request_id makes update dedup restart-durable: the persisted update row IS the
-  // idempotency record (see M11 leftover). Add the column for databases created before
-  // it existed, then a partial unique index so a duplicate (document_key, request_id)
-  // can never be stored twice. The record's lifetime tracks the update log: M10
-  // compaction deletes both together when the update folds into the snapshot.
-  const updateColumns = db.prepare("PRAGMA table_info(document_updates)").all() as {name: string}[];
-  if (!updateColumns.some((column) => column.name === "request_id")) {
-    db.exec("ALTER TABLE document_updates ADD COLUMN request_id TEXT");
-  }
-  db.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_document_updates_request " +
-      "ON document_updates(document_key, request_id) WHERE request_id IS NOT NULL",
-  );
 
   const snapshotRow = db.prepare(
     "SELECT yjs_snapshot_blob, snapshot_revision FROM document_snapshots WHERE document_key = ?",
@@ -82,10 +68,7 @@ export const createPersistence = (db: DatabaseSync, documentKey = "prototype") =
     "SELECT revision, update_blob, agent_id, metadata FROM document_updates WHERE document_key = ? AND revision > ? ORDER BY revision, id",
   );
   const insertUpdate = db.prepare(
-    "INSERT INTO document_updates (document_key, revision, update_blob, agent_id, metadata, created_at, request_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  );
-  const updateByRequestId = db.prepare(
-    "SELECT revision, agent_id, created_at FROM document_updates WHERE document_key = ? AND request_id = ?",
+    "INSERT INTO document_updates (document_key, revision, update_blob, agent_id, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   );
   const upsertSnapshot = db.prepare(`
     INSERT INTO document_snapshots (document_key, yjs_snapshot_blob, snapshot_revision, updated_at)
@@ -130,7 +113,6 @@ export const createPersistence = (db: DatabaseSync, documentKey = "prototype") =
     update: Uint8Array,
     agentId: string,
     metadata?: Record<string, unknown>,
-    requestId?: string,
     createdAt = new Date().toISOString(),
   ) => {
     insertUpdate.run(
@@ -140,20 +122,7 @@ export const createPersistence = (db: DatabaseSync, documentKey = "prototype") =
       agentId,
       metadata ? JSON.stringify(metadata) : null,
       createdAt,
-      requestId ?? null,
     );
-  };
-
-  // Look up a previously accepted update by its client-supplied requestId, for
-  // restart-durable idempotency. Returns enough to reconstruct the original accept
-  // response without re-applying the update.
-  const findByRequestId = (
-    requestId: string,
-  ): {revision: number; agentId: string | null; createdAt: string} | undefined => {
-    const row = updateByRequestId.get(documentKey, requestId) as
-      | {revision: number; agent_id: string | null; created_at: string}
-      | undefined;
-    return row ? {revision: row.revision, agentId: row.agent_id, createdAt: row.created_at} : undefined;
   };
 
   // Write a fresh snapshot at `revision` and drop the update rows it now covers.
@@ -178,7 +147,7 @@ export const createPersistence = (db: DatabaseSync, documentKey = "prototype") =
 
   const countUpdates = () => Number((countUpdatesRow.get(documentKey) as {count: number}).count);
 
-  return {load, appendUpdate, findByRequestId, writeSnapshot, countUpdates};
+  return {load, appendUpdate, writeSnapshot, countUpdates};
 };
 
 export type Persistence = ReturnType<typeof createPersistence>;

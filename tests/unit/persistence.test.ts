@@ -77,36 +77,3 @@ test("load ignores updates already covered by a later snapshot", () => {
   assert.equal(rebuild(state), "one two");
 });
 
-test("requestId dedup is restart-durable: a fresh persistence over the same db finds it", () => {
-  const db = new DatabaseSync(":memory:");
-  const store = createPersistence(db, "1");
-  const first = updateFrom((t) => t.insert(0, "hi"));
-  store.appendUpdate(1, first.update, "agent-a", {reason: "x"}, "req-123");
-
-  // A brand-new persistence over the same db + key (as after a server restart) still
-  // resolves the requestId to the original accept response.
-  const restored = createPersistence(db, "1");
-  const found = restored.findByRequestId("req-123");
-  assert.equal(found?.revision, 1);
-  assert.equal(found?.agentId, "agent-a");
-  assert.equal(restored.findByRequestId("never-seen"), undefined);
-  // requestId is scoped per document_key: a different document does not see it.
-  assert.equal(createPersistence(db, "2").findByRequestId("req-123"), undefined);
-});
-
-test("the partial unique index blocks storing the same requestId twice", () => {
-  const db = new DatabaseSync(":memory:");
-  const store = createPersistence(db, "1");
-  const upd = updateFrom((t) => t.insert(0, "x"));
-  store.appendUpdate(1, upd.update, "agent-a", undefined, "dup-id");
-  assert.throws(() => store.appendUpdate(2, upd.update, "agent-a", undefined, "dup-id"), /UNIQUE|constraint/i);
-});
-
-test("updates without a requestId are unconstrained (index is partial)", () => {
-  const db = new DatabaseSync(":memory:");
-  const store = createPersistence(db, "1");
-  const upd = updateFrom((t) => t.insert(0, "x"));
-  store.appendUpdate(1, upd.update, "agent-a"); // no requestId
-  store.appendUpdate(2, upd.update, "agent-a"); // also none — must not conflict
-  assert.equal(store.countUpdates(), 2);
-});

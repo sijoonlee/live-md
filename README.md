@@ -47,8 +47,7 @@ authorship — it stamps every edit with the principal that made it.
   API.
 - **Markdown import / export** — export a document as `.md`, or as a `.zip` bundle with its
   attachments (links rewritten); import either back into a new document.
-- **Durable & restart-safe** — SQLite snapshot + compacted update log; update submission is
-  idempotent across restarts.
+- **Durable & restart-safe** — SQLite snapshot + compacted update log.
 
 ---
 
@@ -169,9 +168,8 @@ documents are not files, and the webview runs the existing browser client unchan
 No route requires authentication. Requests that look like they came from another site are
 refused by the loopback guard; everything else is allowed.
 
-- **Documents:** `GET /api/documents/:id/state` · `POST /api/documents/:id/sync` ·
-  `GET`/`POST /api/documents/:id/updates` · cursors · `GET /api/documents/:id/history` ·
-  `GET /api/documents/:id/export`.
+- **Documents:** `GET /api/documents/:id/state` ·
+  `GET /api/documents/:id/history` · `GET /api/documents/:id/export`.
 - **Directory:** `GET /api/folders` · folder + document create/rename/move/delete ·
   `POST /api/folders/:id/import`.
 - **Attachments:** `POST`/`GET /api/documents/:id/files` · `GET`/`DELETE /api/files/:id`.

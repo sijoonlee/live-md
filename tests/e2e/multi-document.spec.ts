@@ -1,12 +1,8 @@
 import {expect, test} from "@playwright/test";
+import {callTool} from "./mcp-client";
 import * as Y from "yjs";
 
 // A base64 Yjs update that inserts `value` at the start of an empty document.
-const insertUpdate = (value: string) => {
-  const doc = new Y.Doc();
-  doc.getText("content").insert(0, value);
-  return Buffer.from(Y.encodeStateAsUpdate(doc)).toString("base64");
-};
 
 test("id-keyed documents hold independent content", async ({page, request}) => {
   await page.goto("/"); // establishes the signed-in session via storageState
@@ -18,25 +14,19 @@ test("id-keyed documents hold independent content", async ({page, request}) => {
   const docA = await create(`iso-a-${suffix}.md`);
   const docB = await create(`iso-b-${suffix}.md`);
 
-  // Writes name their agent for the history log; nothing authenticates them.
+  // Write only to document A, over MCP.
   const agentName = `iso-agent-${suffix}`;
-  const auth = {"x-agent-id": agentName};
+  const write = await callTool(request, agentName, "append_document", {documentId: docA.id, content: "only in A"});
+  expect(write.isError).toBe(false);
 
-  // Write only to document A.
-  const write = await request.post(`/api/documents/${docA.id}/updates`, {
-    headers: auth,
-    data: {requestId: `iso-${suffix}`, update: insertUpdate("only in A")},
-  });
-  expect(write.status()).toBe(202);
-
-  const textViaToken = async (id: number) => {
-    const state = await (await request.get(`/api/documents/${id}/state`, {headers: auth})).json();
+  const textOf = async (id: number) => {
+    const state = await (await request.get(`/api/documents/${id}/state`)).json();
     const doc = new Y.Doc();
     Y.applyUpdate(doc, new Uint8Array(Buffer.from(state.update, "base64")));
     return doc.getText("content").toString();
   };
   // A has the content the agent wrote.
-  expect(await textViaToken(docA.id)).toBe("only in A");
+  expect(await textOf(docA.id)).toBe("only in A");
   // B is a separate room and a separate Y.Doc: the write to A must not reach it.
   const ownerState = await (await request.get(`/api/documents/${docB.id}/state`)).json();
   const bDoc = new Y.Doc();
