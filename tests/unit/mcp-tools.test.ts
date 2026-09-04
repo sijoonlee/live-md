@@ -23,6 +23,10 @@ const {
   replyToCommentTool,
   resolveCommentTool,
   deleteCommentTool,
+  listDirectoriesTool,
+  createDirectoryTool,
+  renameDirectoryTool,
+  moveDirectoryTool,
 } = await import("../../src/mcp-tools.js");
 const {createDocument, createFolder, listFolders} = await import("../../src/directory.js");
 const {getLiveDocument} = await import("../../src/document-registry.js");
@@ -324,4 +328,77 @@ test("comment tools refuse an unknown id and refuse to resolve a reply", () => {
     () => resolveCommentTool(AUTHOR, acceptUpdate, {documentId: meta.id, commentId: reply.commentId}),
     (error: Error) => error instanceof ToolError && /first comment/.test(error.message),
   );
+});
+
+// --- directories ----------------------------------------------------------
+
+test("list_directories reports every directory with its path, root included", () => {
+  const outer = createDirectoryTool({name: "Listed"});
+  const inner = createDirectoryTool({name: "Drafts", parentDirectoryId: outer.directoryId});
+
+  const listed = listDirectoriesTool();
+  const root = listed.find((d) => d.parentDirectoryId === null)!;
+  assert.equal(root.path, "/");
+  assert.equal(listed.find((d) => d.directoryId === outer.directoryId)?.path, "/Listed");
+  assert.equal(listed.find((d) => d.directoryId === inner.directoryId)?.path, "/Listed/Drafts");
+});
+
+test("create_directory defaults to the root and rejects an unusable name", () => {
+  const created = createDirectoryTool({name: "  Padded  "});
+  assert.equal(created.name, "Padded", "the name is trimmed");
+  assert.equal(created.parentDirectoryId, listDirectoriesTool().find((d) => d.path === "/")!.directoryId);
+
+  assert.throws(() => createDirectoryTool({name: "   "}), ToolError);
+  assert.throws(() => createDirectoryTool({name: "x".repeat(201)}), ToolError);
+});
+
+// The unique constraint is (parent, name), so this is a name collision — the agent
+// should be told that, not handed a SQL error.
+test("create_directory reports a name that is already taken", () => {
+  createDirectoryTool({name: "Twice"});
+  assert.throws(
+    () => createDirectoryTool({name: "Twice"}),
+    (error: Error) => error instanceof ToolError && /already exists/.test(error.message),
+  );
+});
+
+test("rename_directory renames in place and refuses the root", () => {
+  const created = createDirectoryTool({name: "Before"});
+  const renamed = renameDirectoryTool({directoryId: created.directoryId, name: "After"});
+  assert.equal(renamed.name, "After");
+  assert.equal(renamed.directoryId, created.directoryId, "the id is stable across a rename");
+
+  const rootId = listDirectoriesTool().find((d) => d.path === "/")!.directoryId;
+  assert.throws(
+    () => renameDirectoryTool({directoryId: rootId, name: "NotRoot"}),
+    (error: Error) => error instanceof ToolError && /root/.test(error.message),
+  );
+});
+
+test("move_directory takes its contents along", () => {
+  const source = createDirectoryTool({name: "Source"});
+  const target = createDirectoryTool({name: "Target"});
+  const child = createDirectoryTool({name: "Child", parentDirectoryId: source.directoryId});
+
+  moveDirectoryTool({directoryId: source.directoryId, parentDirectoryId: target.directoryId});
+  const listed = listDirectoriesTool();
+  assert.equal(listed.find((d) => d.directoryId === source.directoryId)?.path, "/Target/Source");
+  assert.equal(listed.find((d) => d.directoryId === child.directoryId)?.path, "/Target/Source/Child");
+});
+
+// Moving a directory inside itself would detach the whole subtree from the tree.
+test("move_directory refuses a move into itself or its own descendant", () => {
+  const parent = createDirectoryTool({name: "Parent"});
+  const child = createDirectoryTool({name: "Kid", parentDirectoryId: parent.directoryId});
+
+  assert.throws(() => moveDirectoryTool({directoryId: parent.directoryId, parentDirectoryId: parent.directoryId}), ToolError);
+  assert.throws(() => moveDirectoryTool({directoryId: parent.directoryId, parentDirectoryId: child.directoryId}), ToolError);
+  // The tree is unchanged.
+  assert.equal(listDirectoriesTool().find((d) => d.directoryId === child.directoryId)?.path, "/Parent/Kid");
+});
+
+test("directory tools report an unknown id", () => {
+  assert.throws(() => renameDirectoryTool({directoryId: 9999, name: "x"}), ToolError);
+  assert.throws(() => moveDirectoryTool({directoryId: 9999, parentDirectoryId: 1}), ToolError);
+  assert.throws(() => createDirectoryTool({name: "orphan", parentDirectoryId: 9999}), ToolError);
 });

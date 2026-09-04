@@ -101,6 +101,10 @@ you would rather copy one.
 | `delete_attachment` | remove an attachment |
 | `export_document` | write `.md`, or a `.zip` bundle with attachments |
 | `import_document` | create a document from a local `.md` or `.zip` |
+| `list_directories` | every directory with its path, for resolving a name to an id |
+| `create_directory` | create one, at the root or under a parent |
+| `rename_directory` | rename in place |
+| `move_directory` | move one under another, contents included |
 
 Files move by **path**, not as base64 in a tool argument: the agent and the server share
 a filesystem here, so routing megabytes through a model's context to move a file it can

@@ -7,7 +7,7 @@ import {readFileSync, statSync, writeFileSync} from "node:fs";
 import {basename, join} from "node:path";
 import {deleteFile, getFileMetadata, listFiles, saveFile} from "./files.js";
 import {buildExport, guessMimeType, importBundle} from "./export-import.js";
-import {listFolders} from "./directory.js";
+import {createFolder, getFolder, listFolders, moveFolder, renameFolder} from "./directory.js";
 
 // The document operations behind the MCP tools. Kept apart from the transport in
 // mcp.ts so the interesting part — resolving a text anchor against the live
@@ -373,4 +373,83 @@ export const deleteCommentTool = (
     removeComment(replica, args.commentId);
   });
   return {commentId: args.commentId, deleted: true};
+};
+
+// --- directories ----------------------------------------------------------
+//
+// The tree an agent needs to place things. Named "directory" throughout this
+// layer, matching the module these call into; the storage below still says
+// "folder".
+
+const MAX_NAME = 200;
+
+const directoryName = (value: string): string => {
+  const name = value.trim();
+  if (name.length === 0 || name.length > MAX_NAME) {
+    throw new ToolError(`name must be 1-${MAX_NAME} characters`);
+  }
+  return name;
+};
+
+// The unique constraint is (parent, name), so a clash is a name collision — worth
+// saying plainly rather than surfacing a SQL error.
+const named = <T>(work: () => T | undefined, what: string): T => {
+  let result;
+  try {
+    result = work();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ToolError(/UNIQUE|constraint/i.test(message) ? `a ${what} with that name already exists here` : message);
+  }
+  if (!result) throw new ToolError(`${what} could not be saved`);
+  return result;
+};
+
+const requireDirectory = (directoryId: number) => {
+  const found = getFolder(directoryId);
+  if (!found) throw new ToolError(`directory ${directoryId} not found`);
+  return found;
+};
+
+// Every directory with its full path, so an agent can name one in a request and
+// resolve it to an id without walking the tree itself.
+export const listDirectoriesTool = () => {
+  const found: {directoryId: number; name: string; path: string; parentDirectoryId: number | null}[] = [];
+  const walk = (id: number, prefix: string) => {
+    for (const child of listFolders(id)) {
+      const childPath = `${prefix}/${child.name}`;
+      found.push({directoryId: child.id, name: child.name, path: childPath, parentDirectoryId: child.parentFolderId});
+      walk(child.id, childPath);
+    }
+  };
+  // listFolders(null) returns the root itself rather than its children.
+  const root = listFolders(null)[0];
+  found.push({directoryId: root.id, name: root.name, path: "/", parentDirectoryId: null});
+  walk(root.id, "");
+  return found;
+};
+
+export const createDirectoryTool = (args: {name: string; parentDirectoryId?: number}) => {
+  const name = directoryName(args.name);
+  const parentId = args.parentDirectoryId ?? rootFolderId();
+  requireDirectory(parentId);
+  const created = named(() => createFolder(name, parentId), "directory");
+  return {directoryId: created.id, name: created.name, parentDirectoryId: created.parentFolderId};
+};
+
+export const renameDirectoryTool = (args: {directoryId: number; name: string}) => {
+  requireDirectory(args.directoryId);
+  if (args.directoryId === rootFolderId()) throw new ToolError("the root directory cannot be renamed");
+  const name = directoryName(args.name);
+  const renamed = named(() => renameFolder(args.directoryId, name), "directory");
+  return {directoryId: renamed.id, name: renamed.name};
+};
+
+export const moveDirectoryTool = (args: {directoryId: number; parentDirectoryId: number}) => {
+  requireDirectory(args.directoryId);
+  requireDirectory(args.parentDirectoryId);
+  // moveFolder refuses the root, and refuses a move into itself or a descendant —
+  // which would detach the subtree from the tree entirely.
+  const moved = named(() => moveFolder(args.directoryId, args.parentDirectoryId), "directory");
+  return {directoryId: moved.id, name: moved.name, parentDirectoryId: moved.parentFolderId};
 };

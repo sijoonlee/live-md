@@ -14,6 +14,10 @@ import {
   importDocumentTool,
   listAttachmentsTool,
   listCommentsTool,
+  listDirectoriesTool,
+  createDirectoryTool,
+  renameDirectoryTool,
+  moveDirectoryTool,
   listDocumentsTool,
   readDocumentTool,
   replyToCommentTool,
@@ -58,6 +62,7 @@ const run = <T>(work: () => T) => {
 };
 
 const documentId = z.number().int().positive().describe("id of the document, from list_documents");
+const directoryId = z.number().int().positive().describe("id of the directory, from list_directories");
 
 export const createMcpServer = (author: string, acceptUpdate: AcceptUpdate): McpServer => {
   const server = new McpServer(
@@ -265,6 +270,54 @@ export const createMcpServer = (author: string, acceptUpdate: AcceptUpdate): Mcp
       },
     },
     async (args) => run(() => importDocumentTool(author, acceptUpdate, args)),
+  );
+
+  // --- directories --------------------------------------------------------
+
+  server.registerTool(
+    "list_directories",
+    {
+      title: "List directories",
+      description:
+        "List every directory with its full path. Use this to turn a directory named in a " +
+        "request into the id the other tools take.",
+      inputSchema: {},
+      annotations: {readOnlyHint: true},
+    },
+    async () => run(() => listDirectoriesTool()),
+  );
+
+  server.registerTool(
+    "create_directory",
+    {
+      title: "Create a directory",
+      description: "Create a directory, at the root unless a parent is given.",
+      inputSchema: {
+        name: z.string().min(1).describe("name for the new directory"),
+        parentDirectoryId: directoryId.optional().describe("where to create it; defaults to the root"),
+      },
+    },
+    async (args) => run(() => createDirectoryTool(args)),
+  );
+
+  server.registerTool(
+    "rename_directory",
+    {
+      title: "Rename a directory",
+      description: "Rename a directory. Its contents and ids are unaffected.",
+      inputSchema: {directoryId, name: z.string().min(1).describe("the new name")},
+    },
+    async (args) => run(() => renameDirectoryTool(args)),
+  );
+
+  server.registerTool(
+    "move_directory",
+    {
+      title: "Move a directory",
+      description: "Move a directory under another one, taking everything inside it along.",
+      inputSchema: {directoryId, parentDirectoryId: directoryId.describe("the directory to move it into")},
+    },
+    async (args) => run(() => moveDirectoryTool(args)),
   );
 
   return server;
