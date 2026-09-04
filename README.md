@@ -131,8 +131,11 @@ same `can()` choke point: an agent sees only documents shared with it, and anyth
 sits in a tab beside your code and an agent terminal.
 
 ```bash
-cd vscode-extension && npm install && npm run build
+npm run build:extension
 ```
+
+The extension has no toolchain or dependencies of its own — its `package.json` is a VS Code
+manifest, and the root project builds it — so there is no second `npm install`.
 
 Then press <kbd>F5</kbd> from the repository root (a launch configuration is included) and
 run **live-md: Open** in the new window. `liveMd.url` points it at the server
