@@ -6,10 +6,18 @@ import {
   ToolError,
   addCommentTool,
   appendDocumentTool,
+  attachFileTool,
+  deleteAttachmentTool,
+  deleteCommentTool,
   editDocumentTool,
+  exportDocumentTool,
+  importDocumentTool,
+  listAttachmentsTool,
   listCommentsTool,
   listDocumentsTool,
   readDocumentTool,
+  replyToCommentTool,
+  resolveCommentTool,
   type AcceptUpdate,
 } from "./mcp-tools.js";
 
@@ -143,6 +151,120 @@ export const createMcpServer = (author: string, acceptUpdate: AcceptUpdate): Mcp
       annotations: {readOnlyHint: true},
     },
     async ({documentId: id}) => run(() => listCommentsTool(id)),
+  );
+
+  // --- comment threads ----------------------------------------------------
+
+  server.registerTool(
+    "reply_to_comment",
+    {
+      title: "Reply to a comment",
+      description: "Reply in an existing comment thread — how to answer a question the person left for you.",
+      inputSchema: {
+        documentId,
+        commentId: z.string().min(1).describe("thread or comment id, from list_comments"),
+        body: z.string().min(1).describe("the reply"),
+      },
+    },
+    async (args) => run(() => replyToCommentTool(author, acceptUpdate, args)),
+  );
+
+  server.registerTool(
+    "resolve_comment",
+    {
+      title: "Resolve a comment thread",
+      description: "Mark a thread resolved once you have acted on it (or reopen it with resolved: false).",
+      inputSchema: {
+        documentId,
+        commentId: z.string().min(1).describe("the thread's first comment id"),
+        resolved: z.boolean().optional().describe("false reopens the thread; defaults to true"),
+      },
+    },
+    async (args) => run(() => resolveCommentTool(author, acceptUpdate, args)),
+  );
+
+  server.registerTool(
+    "delete_comment",
+    {
+      title: "Delete a comment",
+      description:
+        "Delete a comment you left. A thread with replies is kept as \"[deleted]\" so the conversation stays readable.",
+      inputSchema: {documentId, commentId: z.string().min(1).describe("comment id, from list_comments")},
+    },
+    async (args) => run(() => deleteCommentTool(author, acceptUpdate, args)),
+  );
+
+  // --- attachments --------------------------------------------------------
+
+  server.registerTool(
+    "list_attachments",
+    {
+      title: "List attachments",
+      description: "List a document's attached files, with the reference to use when linking to one.",
+      inputSchema: {documentId},
+      annotations: {readOnlyHint: true},
+    },
+    async ({documentId: id}) => run(() => listAttachmentsTool(id)),
+  );
+
+  server.registerTool(
+    "attach_file",
+    {
+      title: "Attach a file",
+      description:
+        "Attach a local file to a document. Returns Markdown ready to insert with edit_document — " +
+        "attaching does not put a link in the text by itself.",
+      inputSchema: {
+        documentId,
+        path: z.string().min(1).describe("path to the file on this machine"),
+        filename: z.string().optional().describe("name to store it under; defaults to the file's own name"),
+      },
+    },
+    async (args) => run(() => attachFileTool(author, args)),
+  );
+
+  server.registerTool(
+    "delete_attachment",
+    {
+      title: "Delete an attachment",
+      description: "Permanently delete an attachment. Links to it in the document are left as they are.",
+      inputSchema: {fileId: z.number().int().positive().describe("id from list_attachments")},
+    },
+    async ({fileId}) => run(() => deleteAttachmentTool(fileId)),
+  );
+
+  // --- import / export ----------------------------------------------------
+
+  server.registerTool(
+    "export_document",
+    {
+      title: "Export a document",
+      description:
+        "Write a document to a file as Markdown, or as a .zip bundle with its attachments when it " +
+        "references any (format: \"md\" forces plain Markdown). Give a directory to use the document's own name.",
+      inputSchema: {
+        documentId,
+        path: z.string().min(1).describe("file to write, or a directory to write into"),
+        format: z.literal("md").optional().describe("force plain Markdown instead of a bundle"),
+      },
+    },
+    async (args) => run(() => exportDocumentTool(args)),
+  );
+
+  server.registerTool(
+    "import_document",
+    {
+      title: "Import a document",
+      description:
+        "Create a document from a local .md file or a .zip bundle (Markdown plus an assets/ folder). " +
+        "Bundled assets become attachments and their links are rewritten.",
+      inputSchema: {
+        path: z.string().min(1).describe("path to a .md or .zip file on this machine"),
+        folderId: z.number().int().positive().optional().describe("folder to create it in; defaults to the root"),
+        name: z.string().optional().describe("document name; defaults to the file's name"),
+      },
+    },
+    async (args) => run(() => importDocumentTool(author, acceptUpdate, args)),
   );
 
   return server;

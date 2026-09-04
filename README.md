@@ -94,6 +94,18 @@ you would rather copy one.
 | `append_document` | append to the end |
 | `add_comment` | comment on a passage instead of editing it |
 | `list_comments` | a document's comment threads |
+| `reply_to_comment` | answer a question left in a thread |
+| `resolve_comment` | mark a thread resolved, or reopen it |
+| `delete_comment` | remove a comment (a thread with replies is tombstoned) |
+| `list_attachments` | a document's files, with the reference to link to one |
+| `attach_file` | attach a local file; returns Markdown ready to insert |
+| `delete_attachment` | remove an attachment |
+| `export_document` | write `.md`, or a `.zip` bundle with attachments |
+| `import_document` | create a document from a local `.md` or `.zip` |
+
+Files move by **path**, not as base64 in a tool argument: the agent and the server share
+a filesystem here, so routing megabytes through a model's context to move a file it can
+already see would be absurd.
 
 Edits are **anchored, not offset-based**. Models are poor at character offsets, and an
 offset computed a moment ago may already be stale because you typed above it. `oldString`
@@ -216,7 +228,8 @@ src/
   files.ts / blob-store.ts   attachments (content-addressed blobs)
   comments.ts        line-anchored comment threads (Yjs)
   activity.ts        durable activity/history log + server-minted update ids
-  markdown-assets.ts / zip.ts   import/export link rewriting + store-only zip
+  markdown-assets.ts / zip.ts   link rewriting + store-only zip
+  export-import.ts   Markdown/zip export and import, shared by HTTP and MCP
   mcp.ts / mcp-tools.ts   the MCP server: transport, and the anchored document tools
   agent-client.ts    the AgentClient SDK
   client.ts          the browser app (bundled to public/app.js)

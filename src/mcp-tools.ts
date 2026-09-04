@@ -1,8 +1,13 @@
 import * as Y from "yjs";
 import type {LiveDocument} from "./document.js";
-import {getDocument, listDocuments, listFolders, type DirectoryDocument} from "./directory.js";
+import {getDocument, listDocuments, type DirectoryDocument} from "./directory.js";
 import {getLiveDocument} from "./document-registry.js";
-import {addRootComment, listComments} from "./comments.js";
+import {addReply, addRootComment, deleteComment as removeComment, listComments, setResolved} from "./comments.js";
+import {readFileSync, statSync, writeFileSync} from "node:fs";
+import {basename, join} from "node:path";
+import {deleteFile, getFileMetadata, listFiles, saveFile} from "./files.js";
+import {buildExport, guessMimeType, importBundle} from "./export-import.js";
+import {listFolders} from "./directory.js";
 
 // The document operations behind the MCP tools. Kept apart from the transport in
 // mcp.ts so the interesting part — resolving a text anchor against the live
@@ -125,6 +130,16 @@ const requireDocument = (documentId: number) => {
 
 // Walk the folder tree so each document can be reported with a human-meaningful
 // path — an agent asked to "work on my design doc" needs names, not bare ids.
+const rootFolderId = () => listFolders(null)[0].id;
+
+const isDirectory = (path: string) => {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
 export const allDocuments = (): {document: DirectoryDocument; path: string}[] => {
   const found: {document: DirectoryDocument; path: string}[] = [];
   const walk = (folderId: number, prefix: string) => {
@@ -219,4 +234,143 @@ export const listCommentsTool = (documentId: number) => {
     body: comment.body,
     resolved: comment.resolved,
   }));
+};
+
+// --- attachments ----------------------------------------------------------
+//
+// Files move by path rather than as base64 in a tool argument: the agent and the
+// server share a filesystem in this build, and routing megabytes through a model's
+// context to move a file it can already see would be absurd.
+
+export const listAttachmentsTool = (documentId: number) => {
+  requireDocument(documentId);
+  return listFiles(documentId).map((file) => ({
+    fileId: file.id,
+    filename: file.filename,
+    mimeType: file.mimeType,
+    bytes: file.size,
+    isImage: file.isImage,
+    // What to put in the Markdown to reference it.
+    reference: file.url,
+  }));
+};
+
+export const attachFileTool = (author: string, args: {documentId: number; path: string; filename?: string}) => {
+  requireDocument(args.documentId);
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(readFileSync(args.path));
+  } catch {
+    throw new ToolError(`could not read ${args.path}`);
+  }
+  const filename = args.filename?.trim() || basename(args.path);
+  try {
+    const file = saveFile(bytes, guessMimeType(filename), args.documentId, {filename, uploadedBy: author});
+    return {
+      fileId: file.id,
+      filename: file.filename,
+      bytes: file.size,
+      // Ready to paste into the document; images render inline, everything else downloads.
+      markdown: `${file.isImage ? "!" : ""}[${file.filename}](${file.url})`,
+    };
+  } catch (error) {
+    throw new ToolError(error instanceof Error ? error.message : "file could not be stored");
+  }
+};
+
+export const deleteAttachmentTool = (fileId: number) => {
+  const file = getFileMetadata(fileId);
+  if (!file) throw new ToolError(`attachment ${fileId} not found`);
+  deleteFile(fileId);
+  return {fileId, filename: file.filename, deleted: true};
+};
+
+// --- import / export ------------------------------------------------------
+
+export const exportDocumentTool = (args: {documentId: number; path: string; format?: "md"}) => {
+  requireDocument(args.documentId);
+  const result = buildExport(args.documentId, {format: args.format});
+  // A directory means "put it here under its own name"; anything else is the file.
+  const target = isDirectory(args.path) ? join(args.path, result.filename) : args.path;
+  try {
+    writeFileSync(target, result.bytes);
+  } catch (error) {
+    throw new ToolError(`could not write ${target}: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+  return {path: target, bytes: result.bytes.length, warnings: result.warnings};
+};
+
+export const importDocumentTool = (
+  author: string,
+  acceptUpdate: AcceptUpdate,
+  args: {path: string; folderId?: number; name?: string},
+) => {
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(readFileSync(args.path));
+  } catch {
+    throw new ToolError(`could not read ${args.path}`);
+  }
+  const folderId = args.folderId ?? rootFolderId();
+  try {
+    const {document, attachments} = importBundle(folderId, bytes, {
+      filename: args.name?.trim() || basename(args.path),
+      author,
+      accept: (documentId, live, who, update, metadata) => acceptUpdate(documentId, live, who, update, metadata),
+    });
+    return {documentId: document.id, name: document.name, attachments};
+  } catch (error) {
+    throw new ToolError(error instanceof Error ? error.message : "import failed");
+  }
+};
+
+// --- comment threads ------------------------------------------------------
+
+const findComment = (live: LiveDocument, commentId: string) => {
+  const found = listComments(replicaOf(live)).find((comment) => comment.id === commentId);
+  if (!found) throw new ToolError(`comment ${commentId} not found; call list_comments for current ids`);
+  return found;
+};
+
+export const replyToCommentTool = (
+  author: string,
+  acceptUpdate: AcceptUpdate,
+  args: {documentId: number; commentId: string; body: string},
+) => {
+  const {live} = requireDocument(args.documentId);
+  if (args.body.trim().length === 0) throw new ToolError("body must not be empty");
+  findComment(live, args.commentId);
+  let replyId = "";
+  commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:reply_to_comment"}, (replica) => {
+    replyId = addReply(replica, {parentId: args.commentId, author, body: args.body});
+  });
+  return {commentId: replyId, parentId: args.commentId};
+};
+
+export const resolveCommentTool = (
+  author: string,
+  acceptUpdate: AcceptUpdate,
+  args: {documentId: number; commentId: string; resolved?: boolean},
+) => {
+  const {live} = requireDocument(args.documentId);
+  const comment = findComment(live, args.commentId);
+  if (comment.parentId !== null) throw new ToolError("only a thread's first comment can be resolved");
+  const resolved = args.resolved ?? true;
+  commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:resolve_comment"}, (replica) => {
+    setResolved(replica, args.commentId, resolved);
+  });
+  return {commentId: args.commentId, resolved};
+};
+
+export const deleteCommentTool = (
+  author: string,
+  acceptUpdate: AcceptUpdate,
+  args: {documentId: number; commentId: string},
+) => {
+  const {live} = requireDocument(args.documentId);
+  findComment(live, args.commentId);
+  commit(args.documentId, live, author, acceptUpdate, {reason: "mcp:delete_comment"}, (replica) => {
+    removeComment(replica, args.commentId);
+  });
+  return {commentId: args.commentId, deleted: true};
 };
