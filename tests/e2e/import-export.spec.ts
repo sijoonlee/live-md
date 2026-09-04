@@ -1,6 +1,9 @@
 import {expect, test, type Page} from "@playwright/test";
 import {createZip, readZip} from "../../src/zip.js";
-import {AgentClient} from "../../src/agent-client.js";
+import {callToolJson} from "./mcp-client";
+import {mkdtempSync, readFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import path from "node:path";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x10, 0x20, 0x30, 0x40]);
 
@@ -231,20 +234,31 @@ test("export surfaces notes for broken references and orphan attachments", async
   expect(warnings).toMatch(/unreferenced attachment\(s\) were not included/);
 });
 
-test("agent SDK round-trips a document via export then import", async ({page, baseURL}) => {
+// The agent's own round trip: export to a file, import it back, same content. The
+// tools write and read real files, because an agent and the server share a
+// filesystem here — this is the path a person would actually use.
+test("an agent round-trips a document via export then import over MCP", async ({page, request}) => {
   await page.goto("/");
   const id = await createAndOpen(page, `AgentRT-${Date.now()}.md`);
   await page.getByTestId("document").locator(".cm-content").fill("# Agent export\n\nround trip");
-
   const agentName = `rt-bot-${Date.now()}`;
-  const agent = new AgentClient({baseUrl: baseURL!, agentId: agentName, documentId: id});
-  await expect.poll(async () => (await agent.exportDocument()).bytes.length, {timeout: 5000}).toBeGreaterThan(10);
-  const exported = await agent.exportDocument();
-  expect(exported.contentType).toContain("text/markdown"); // no attachments -> plain .md
-  expect(Buffer.from(exported.bytes).toString()).toContain("round trip");
+  const dir = mkdtempSync(path.join(tmpdir(), "live-md-e2e-"));
 
-  const root = (await agent.listFolders())[0];
-  const imported = await agent.importDocument(root.id, exported.bytes, {filename: "agent-copy.md"});
-  const copy = new AgentClient({baseUrl: baseURL!, agentId: agentName, documentId: imported.id});
-  expect(await copy.load()).toContain("round trip");
+  await expect
+    .poll(async () => (await callToolJson<{content: string}>(request, agentName, "read_document", {documentId: id})).content)
+    .toContain("round trip");
+
+  const exported = await callToolJson<{path: string; warnings: string[]}>(request, agentName, "export_document", {
+    documentId: id,
+    path: dir,
+  });
+  expect(exported.path.endsWith(".md")).toBe(true); // no attachments -> plain .md, not a bundle
+  expect(readFileSync(exported.path, "utf8")).toContain("round trip");
+
+  const imported = await callToolJson<{documentId: number; name: string}>(request, agentName, "import_document", {
+    path: exported.path,
+    name: "agent-copy.md",
+  });
+  const copy = await callToolJson<{content: string}>(request, agentName, "read_document", {documentId: imported.documentId});
+  expect(copy.content).toContain("round trip");
 });

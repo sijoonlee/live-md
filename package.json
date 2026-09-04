@@ -2,14 +2,6 @@
   "name": "live-md",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "scripts": {
     "dev": "npm run build:client && tsx watch src/server.ts",
     "build": "npm run build:client && tsc",
@@ -18,7 +10,6 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p vscode-extension",
     "test:e2e": "playwright test",
-    "test:sdk": "tsx --test tests/unit/agent-client.test.ts",
     "test:unit": "tsx --test tests/unit/*.test.ts"
   },
   "dependencies": {

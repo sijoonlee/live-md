@@ -1,5 +1,4 @@
 import {expect, test, type Page} from "@playwright/test";
-import {AgentClient} from "../../src/agent-client.js";
 
 // M8 comments: line-anchored threads stored in the Y.Doc, gutter markers, the thread
 // popover, the panel, resolve, viewer-vs-editor gating, persistence/sync, and the SDK.

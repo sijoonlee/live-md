@@ -26,7 +26,7 @@ export type CommentRecord = {
 // anchor no longer resolves (detached) or for replies (which have no anchor).
 export type ResolvedComment = CommentRecord & {line: number | null};
 
-// Base64 helpers that work in both Node (AgentClient) and the browser bundle, since
+// Base64 helpers that work in both Node (the server) and the browser bundle, since
 // this module is imported by both. Prefer Buffer where present; fall back to atob/btoa.
 const toBase64 = (bytes: Uint8Array) =>
   typeof Buffer !== "undefined"

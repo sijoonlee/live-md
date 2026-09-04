@@ -179,28 +179,6 @@ refused by the loopback guard; everything else is allowed.
 - **Realtime:** `WS /ws?doc=<id>` — join one document's room for live document + cursor
   events.
 
-## Agent SDK
-
-Prefer MCP for agents that speak it. `AgentClient` (`src/agent-client.ts`) is a small Node
-client for those that do not: it targets one document, keeps a local `Y.Doc`, and offers
-`insert` / `delete` / `replace`, cursor publishing, attachments, comments, history, and
-Markdown import/export.
-
-```ts
-import {AgentClient} from "./src/agent-client.js";
-
-const agent = new AgentClient({
-  baseUrl: "http://localhost:3000",
-  agentId: "agent-researcher",  // the label its edits are attributed to
-  documentId: 42,               // the document to edit
-});
-
-await agent.load();
-await agent.insert(agent.text.length, "\nNew research.", {reason: "summary", sourceRun: "run-183"});
-```
-
-Note its offset-based API — the reason the MCP tools deliberately do not expose one.
-
 ## Tech stack
 
 TypeScript · [Yjs](https://github.com/yjs/yjs) CRDTs · Express 5 + `ws` · CodeMirror 6 ·
@@ -231,7 +209,6 @@ src/
   markdown-assets.ts / zip.ts   link rewriting + store-only zip
   export-import.ts   Markdown/zip export and import, shared by HTTP and MCP
   mcp.ts / mcp-tools.ts   the MCP server: transport, and the anchored document tools
-  agent-client.ts    the AgentClient SDK
   client.ts          the browser app (bundled to public/app.js)
 vscode-extension/    VS Code webview panel hosting the browser client
 ```

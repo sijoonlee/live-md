@@ -1,36 +1,9 @@
-import {expect, test, type Page, type APIRequestContext} from "@playwright/test";
+import {expect, test, type Page} from "@playwright/test";
+import {callTool} from "./mcp-client";
 
 // The product claim, end to end: a person has a document open in the browser, an
 // agent works on it from somewhere else entirely (over MCP — in practice Claude Code
 // in a terminal), and the edit shows up in front of the person without a reload.
-
-const MCP_HEADERS = {"content-type": "application/json", accept: "application/json, text/event-stream"};
-
-// Minimal MCP client: initialize, then call a tool. Streamable HTTP in stateless
-// mode is a plain POST per JSON-RPC message, so no session plumbing is needed.
-async function callTool(
-  request: APIRequestContext,
-  agentId: string,
-  name: string,
-  args: Record<string, unknown>,
-): Promise<{text: string; isError: boolean}> {
-  const headers = {...MCP_HEADERS, "x-agent-id": agentId};
-  await request.post("/api/mcp", {
-    headers,
-    data: {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "e2e", version: "1"}},
-    },
-  });
-  const response = await request.post("/api/mcp", {
-    headers,
-    data: {jsonrpc: "2.0", id: 2, method: "tools/call", params: {name, arguments: args}},
-  });
-  const body = await response.json();
-  return {text: body.result.content[0].text, isError: !!body.result.isError};
-}
 
 // Create a document. The agent needs no credential — it names itself for the
 // history log and that is all.
