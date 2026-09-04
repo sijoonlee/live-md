@@ -9,3 +9,6 @@ data/blobs/
 .playwright-data/
 .env
 playwright/.auth/
+# The extension has no dependencies of its own — the root project builds it — so a
+# lockfile here is vestigial (npx/vsce leave one behind).
+vscode-extension/package-lock.json
