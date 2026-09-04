@@ -27,7 +27,10 @@ export default defineConfig({
   webServer: {
     // Use a disposable data dir so each run starts from an empty document and
     // persisted state does not leak between runs (see persistence, M10).
-    command: "rm -rf .playwright-data && npm run build && DATA_DIR=.playwright-data PORT=4173 AUTH_DEV_LOGIN=1 npm start",
+    // AUTH_MODE is pinned: the suite exercises the authenticated surface, and the
+    // server loads .env, so a developer running locally with AUTH_MODE=none would
+    // otherwise see every "rejects an unauthenticated request" test fail.
+    command: "rm -rf .playwright-data && npm run build && DATA_DIR=.playwright-data PORT=4173 AUTH_DEV_LOGIN=1 AUTH_MODE=github npm start",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

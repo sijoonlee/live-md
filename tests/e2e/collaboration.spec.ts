@@ -157,3 +157,46 @@ test("opens an in-app dialog for creating a folder", async ({page}) => {
   await dialog.getByRole("button", {name: "Save"}).click();
   await expect(sidebar).toContainText(folderName);
 });
+
+// A remote edit must not disturb where the reader is working. Applying updates by
+// replacing the whole document silently collapsed the caret to position 0, so
+// someone typing while an agent wrote would find their next keystroke at the top of
+// the document. Asserted behaviourally — type a character and check where it lands —
+// because that is what the person actually experiences.
+test("a remote edit leaves the caret where the person left it", async ({browser}) => {
+  const readerContext = await browser.newContext({storageState: authFile});
+  const writerContext = await browser.newContext({storageState: authFile});
+  const reader = await readerContext.newPage();
+  const writer = await writerContext.newPage();
+
+  await reader.goto("/");
+  const id = await openNewDocument(reader);
+  await writer.goto(`/documents/${id}`);
+  const readerEditor = reader.getByTestId("document").locator(".cm-content");
+  const writerEditor = writer.getByTestId("document").locator(".cm-content");
+  await expect(readerEditor).toBeEditable();
+  await expect(writerEditor).toBeEditable();
+
+  await readerEditor.fill("alpha\nbravo\ncharlie");
+  await expect(writerEditor).toContainText("charlie");
+
+  // The caret must sit in the MIDDLE of the document. A caret at the very end
+  // survives even a whole-document replacement, because the end boundary maps to
+  // the end of the inserted text — so testing there hides the bug entirely.
+  await reader.getByText("bravo").click();
+  await reader.keyboard.press("End");
+
+  // Someone else edits well above that position.
+  await writerEditor.click();
+  await writer.keyboard.press("ControlOrMeta+Home");
+  await writer.keyboard.type("INSERTED-AT-TOP ");
+  await expect(readerEditor).toContainText("INSERTED-AT-TOP");
+
+  // The next keystroke must land where the caret was, not at the top.
+  await reader.keyboard.type("!");
+  await expect(readerEditor).toContainText("bravo!");
+  await expect(readerEditor).not.toContainText("!INSERTED-AT-TOP");
+
+  await readerContext.close();
+  await writerContext.close();
+});

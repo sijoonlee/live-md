@@ -1483,6 +1483,32 @@ function initDoc() {
     pendingUpdates.push(encode(update));
     flushUpdates();
   });
+  // Mirror remote text changes into the editor as the edits they actually were.
+  // Replacing the whole document instead would be far simpler, but CodeMirror maps
+  // the selection through a transaction's changes — and there is no sensible
+  // mapping through "delete everything", so the caret collapses to the top of the
+  // document while the reader is typing. Positions in a Yjs delta are expressed
+  // against the pre-change text, which is also what CodeMirror expects of the
+  // entries in `changes`: retain advances, delete advances, insert does not.
+  sharedText.observe((event, transaction) => {
+    if (transaction.origin !== "remote" || !editor) return;
+    const changes: {from: number; to?: number; insert?: string}[] = [];
+    let position = 0;
+    for (const op of event.delta) {
+      if (typeof op.retain === "number") position += op.retain;
+      else if (typeof op.insert === "string") changes.push({from: position, insert: op.insert});
+      else if (typeof op.delete === "number") {
+        changes.push({from: position, to: position + op.delete});
+        position += op.delete;
+      }
+    }
+    if (changes.length === 0) return;
+    applyingRemote = true;
+    // No scrollIntoView: a remote edit must not yank the reader's viewport either.
+    editor.dispatch({changes});
+    applyingRemote = false;
+  });
+
   // A comment change (add/resolve/edit) may not touch the text, so it triggers no
   // CodeMirror docChanged. Nudge the editor to recompute the comment gutter. Guarded
   // because the initial state applies before the editor exists (loadState builds it
@@ -1660,13 +1686,9 @@ window.addEventListener("popstate", () => {
 });
 
 function applyRemoteUpdate(update: Uint8Array) {
+  // Applying to the replica is all this does; the sharedText observer installed in
+  // initDoc turns the resulting delta into precise editor changes.
   Y.applyUpdate(localDoc, update, "remote");
-  if (!editor) return;
-  const next = sharedText.toString();
-  if (editor.state.doc.toString() === next) return;
-  applyingRemote = true;
-  editor.dispatch({changes: {from: 0, to: editor.state.doc.length, insert: next}});
-  applyingRemote = false;
 }
 
 function connect(id: number, generation: number) {

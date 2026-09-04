@@ -226900,6 +226900,23 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
       pendingUpdates.push(encode(update2));
       flushUpdates();
     });
+    sharedText.observe((event3, transaction) => {
+      if (transaction.origin !== "remote" || !editor) return;
+      const changes = [];
+      let position5 = 0;
+      for (const op2 of event3.delta) {
+        if (typeof op2.retain === "number") position5 += op2.retain;
+        else if (typeof op2.insert === "string") changes.push({ from: position5, insert: op2.insert });
+        else if (typeof op2.delete === "number") {
+          changes.push({ from: position5, to: position5 + op2.delete });
+          position5 += op2.delete;
+        }
+      }
+      if (changes.length === 0) return;
+      applyingRemote = true;
+      editor.dispatch({ changes });
+      applyingRemote = false;
+    });
     commentsType(localDoc).observeDeep(() => {
       editor?.dispatch({ effects: refreshComments.of() });
       rerenderOpenThread();
@@ -227045,12 +227062,6 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   });
   function applyRemoteUpdate(update2) {
     applyUpdate(localDoc, update2, "remote");
-    if (!editor) return;
-    const next3 = sharedText.toString();
-    if (editor.state.doc.toString() === next3) return;
-    applyingRemote = true;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: next3 } });
-    applyingRemote = false;
   }
   function connect(id39, generation) {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
