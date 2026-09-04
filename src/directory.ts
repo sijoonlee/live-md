@@ -23,10 +23,6 @@ database.exec(`
   );
 `);
 
-// Databases from the multi-user build carry documents.owner_id and a
-// document_shares table. Both are meaningless here and are simply ignored — dropping
-// them would make the file unreadable by that build for no gain.
-
 const now = () => new Date().toISOString();
 const existingRoot = database.prepare("SELECT id FROM folders WHERE parent_folder_id IS NULL AND name = 'Root'").get() as {id: number} | undefined;
 if (!existingRoot) database.prepare("INSERT INTO folders (parent_folder_id, name, created_at) VALUES (NULL, 'Root', ?)").run(now());
