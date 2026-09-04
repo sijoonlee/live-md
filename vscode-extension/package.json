@@ -21,6 +21,14 @@
       {
         "command": "liveMd.reload",
         "title": "live-md: Reload"
+      },
+      {
+        "command": "liveMd.startServer",
+        "title": "live-md: Start Server"
+      },
+      {
+        "command": "liveMd.stopServer",
+        "title": "live-md: Stop Server"
       }
     ],
     "configuration": {
@@ -30,6 +38,21 @@
           "type": "string",
           "default": "http://localhost:3000",
           "description": "Base URL of the live-md server."
+        },
+        "liveMd.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the live-md server automatically when opening, if nothing is answering at liveMd.url."
+        },
+        "liveMd.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the live-md repository. Defaults to whichever open workspace folder is the live-md project."
+        },
+        "liveMd.startCommand": {
+          "type": "string",
+          "default": "npm run dev",
+          "description": "Command used to start the server, run in the repository directory."
         }
       }
     }

@@ -116,10 +116,21 @@ terminal.
 ./vscode-extension/install.sh   # then reload the VS Code window
 ```
 
-Run **live-md: Open** from the command palette. `liveMd.url` points it at the server
-(`http://localhost:3000` by default). To try it without installing, press <kbd>F5</kbd>
+Run **live-md: Open** from the command palette. If nothing is answering at `liveMd.url`
+(`http://localhost:3000` by default), the extension starts the server for you — so a cold
+start is one command — and stops it again when the window closes. A server you are already
+running is detected and left alone, never duplicated on its port. To try it without installing, press <kbd>F5</kbd>
 from the repository root and run the same command in the new window; to uninstall,
 `./vscode-extension/install.sh --remove`.
+
+| Setting | |
+| --- | --- |
+| `liveMd.url` | server to connect to (default `http://localhost:3000`) |
+| `liveMd.autoStart` | start the server when nothing is answering (default `true`) |
+| `liveMd.serverPath` | where the repository is; defaults to whichever open workspace folder is the live-md project |
+| `liveMd.startCommand` | how to start it (default `npm run dev`) |
+
+Commands: **live-md: Open**, **Reload**, **Start Server**, **Stop Server**.
 
 The extension has no dependencies or toolchain of its own — its `package.json` is a VS Code
 manifest and the root project builds it (`npm run build:extension`), so there is no second

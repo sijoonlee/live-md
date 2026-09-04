@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import {isReachable, isRunning, resolveServerDir, start, stop} from "./server-process.js";
 
 // live-md inside VS Code. The webview hosts the existing browser client unchanged —
 // there is no bridge to a TextDocument and no second replica of the text, because
@@ -19,11 +20,17 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("liveMd.open", () => open()),
     vscode.commands.registerCommand("liveMd.reload", () => reload()),
+    vscode.commands.registerCommand("liveMd.startServer", () => start(configuredUrl(), portOf(configuredUrl()))),
+    vscode.commands.registerCommand("liveMd.stopServer", () => stop()),
+    // A server this extension started is its responsibility to clean up; leaving it
+    // running after the window closes would hold the port with nothing to stop it.
+    {dispose: stop},
   );
 }
 
 export function deactivate() {
   panel?.dispose();
+  stop();
 }
 
 const configuredUrl = () =>
@@ -43,23 +50,37 @@ const portOf = (url: string): number | undefined => {
 };
 
 // A webview that cannot reach the server renders as a blank frame with no
-// explanation, so check first and say what is wrong. Failure is not fatal — the
-// panel still opens, since the server may simply be starting up.
-async function warnIfUnreachable(url: string): Promise<void> {
-  try {
-    await fetch(`${url}/api/me`, {signal: AbortSignal.timeout(2000)});
-  } catch {
+// explanation. So make sure there is something to talk to first: reuse a server
+// that is already answering, otherwise start one.
+async function ensureServer(url: string): Promise<void> {
+  if (await isReachable(url)) return;
+
+  if (!vscode.workspace.getConfiguration("liveMd").get<boolean>("autoStart", true)) {
     const action = await vscode.window.showWarningMessage(
-      `Could not reach a live-md server at ${url}. Is it running?`,
+      `Could not reach a live-md server at ${url}.`,
+      "Start Server",
       "Open Settings",
     );
+    if (action === "Start Server") await start(url, portOf(url));
     if (action === "Open Settings") {
       void vscode.commands.executeCommand("workbench.action.openSettings", "liveMd.url");
     }
+    return;
   }
+
+  // Nothing to start against, and nothing running: say so rather than silently
+  // opening an empty panel.
+  if (!resolveServerDir() && !isRunning()) {
+    void vscode.window.showWarningMessage(
+      `Could not reach a live-md server at ${url}, and no live-md repository is open to start one. ` +
+        `Set liveMd.serverPath, or start it yourself.`,
+    );
+    return;
+  }
+  await start(url, portOf(url));
 }
 
-function open() {
+function open(): void {
   if (panel) {
     panel.reveal(panel.viewColumn);
     return;
@@ -74,10 +95,13 @@ function open() {
     retainContextWhenHidden: true,
     portMapping: port === undefined ? undefined : [{webviewPort: port, extensionHostPort: port}],
   });
-  panel.webview.html = frame(url);
   panel.onDidDispose(() => (panel = undefined));
 
-  void warnIfUnreachable(url);
+  // Load the frame only once there is a server answering; pointing an iframe at a
+  // dead port caches a browser error page that a later reload has to clear.
+  void ensureServer(url).then(() => {
+    if (panel) panel.webview.html = frame(url, Date.now());
+  });
 }
 
 function reload() {
