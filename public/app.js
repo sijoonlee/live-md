@@ -225802,10 +225802,32 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
     if (event3.key === "Enter") $6("name-save").click();
     if (event3.key === "Escape") closeNameDialog();
   });
+  var confirmDialogResolve;
+  function requestConfirm(description, acceptLabel = "Delete") {
+    $6("confirm-dialog-description").textContent = description;
+    $6("confirm-accept").textContent = acceptLabel;
+    $6("confirm-dialog").hidden = false;
+    setTimeout(() => $6("confirm-accept").focus(), 0);
+    return new Promise((resolve2) => {
+      confirmDialogResolve = resolve2;
+    });
+  }
+  function closeConfirmDialog(accepted) {
+    $6("confirm-dialog").hidden = true;
+    const resolve2 = confirmDialogResolve;
+    confirmDialogResolve = void 0;
+    resolve2?.(accepted);
+  }
+  $6("confirm-cancel").addEventListener("click", () => closeConfirmDialog(false));
+  $6("confirm-accept").addEventListener("click", () => closeConfirmDialog(true));
+  $6("confirm-dialog").addEventListener("keydown", (event3) => {
+    if (event3.key === "Escape") closeConfirmDialog(false);
+  });
   async function deleteDirectoryItem() {
     if (!directorySelection) return;
     const warning = directorySelection.kind === "folder" ? "Delete this folder and all its contents?" : directorySelection.kind === "file" ? "Remove this attachment? Any reference to it in the document will show as removed." : "Delete this document?";
-    if (!window.confirm(warning)) return;
+    if (!await requestConfirm(warning, directorySelection.kind === "file" ? "Remove" : "Delete")) return;
+    contextMenu.hidden = true;
     const path4 = directorySelection.kind === "folder" ? `/api/folders/${directorySelection.id}` : directorySelection.kind === "file" ? `/api/files/${directorySelection.id}` : `/api/documents/${directorySelection.id}`;
     const deletingActiveDocument = directorySelection.kind === "document" && directorySelection.id === activeDocumentId;
     await directoryRequest(path4, { method: "DELETE" });

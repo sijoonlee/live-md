@@ -137,6 +137,8 @@ body { background: #f4f6f9; }
 .dialog-actions .primary-action { background: #2563eb; color: #fff; padding-inline: 15px; }
 .dialog-actions .primary-action:hover { background: #1f5da5; }
 .dialog-actions .primary-action:disabled { background: #b8c7db; cursor: not-allowed; }
+.dialog-actions .danger-action { background: #b4233d; color: #fff; padding-inline: 15px; }
+.dialog-actions .danger-action:hover { background: #93192f; }
 .dialog-error { color: #b4233d; font-size: 12px; margin: 10px 0 0; }
 .name-dialog-input { border: 1px solid #aebdd0; border-radius: 4px; color: #1f2937; font: inherit; font-size: 14px; padding: 9px 10px; width: 100%; }
 .name-dialog-input:focus { border-color: #2563eb; outline: 2px solid rgba(37, 99, 235, .18); }

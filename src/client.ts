@@ -279,13 +279,40 @@ $("name-dialog-input").addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeNameDialog();
 });
 
+// The client also runs inside the VS Code webview, whose sandbox silently ignores
+// window.confirm() (it returns false), so a native confirm would make Delete look
+// broken there. This is the same in-app dialog pattern the rename/move flows use.
+let confirmDialogResolve: ((accepted: boolean) => void) | undefined;
+function requestConfirm(description: string, acceptLabel = "Delete") {
+  $("confirm-dialog-description").textContent = description;
+  $("confirm-accept").textContent = acceptLabel;
+  $("confirm-dialog").hidden = false;
+  setTimeout(() => ($("confirm-accept") as HTMLButtonElement).focus(), 0);
+  return new Promise<boolean>((resolve) => { confirmDialogResolve = resolve; });
+}
+
+function closeConfirmDialog(accepted: boolean) {
+  $("confirm-dialog").hidden = true;
+  const resolve = confirmDialogResolve;
+  confirmDialogResolve = undefined;
+  resolve?.(accepted);
+}
+
+$("confirm-cancel").addEventListener("click", () => closeConfirmDialog(false));
+$("confirm-accept").addEventListener("click", () => closeConfirmDialog(true));
+$("confirm-dialog").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeConfirmDialog(false);
+});
+
 async function deleteDirectoryItem() {
   if (!directorySelection) return;
   const warning =
     directorySelection.kind === "folder" ? "Delete this folder and all its contents?" :
     directorySelection.kind === "file" ? "Remove this attachment? Any reference to it in the document will show as removed." :
     "Delete this document?";
-  if (!window.confirm(warning)) return;
+  if (!await requestConfirm(warning, directorySelection.kind === "file" ? "Remove" : "Delete")) return;
+  // The context menu stays open while the dialog is up; close it now that we act.
+  contextMenu.hidden = true;
   const path =
     directorySelection.kind === "folder" ? `/api/folders/${directorySelection.id}` :
     directorySelection.kind === "file" ? `/api/files/${directorySelection.id}` :
