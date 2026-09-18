@@ -76,6 +76,29 @@ test("pasting an image uploads it and inserts a Markdown reference", async ({pag
   await expect(page.locator(".cm-preview-image")).toBeVisible();
 });
 
+// Copying from Word, Excel or a web page puts a rendered image on the clipboard
+// next to the text. The text is what the user meant to paste.
+test("pasting text that also carries an image flavor pastes the text", async ({page}) => {
+  await page.goto("/");
+  await openNewDocument(page);
+  const content = page.getByTestId("document").locator(".cm-content");
+  await content.fill("");
+
+  await page.evaluate((b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const data = new DataTransfer();
+    data.setData("text/plain", "copied from a spreadsheet");
+    data.setData("text/html", "<b>copied from a spreadsheet</b>");
+    data.items.add(new File([bytes], "clip.png", {type: "image/png"}));
+    document
+      .querySelector(".cm-content")!
+      .dispatchEvent(new ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true}));
+  }, PNG_BASE64);
+
+  await expect(content).toContainText("copied from a spreadsheet");
+  await expect(content).not.toContainText("clip.png");
+});
+
 test("dropping an image uploads it and inserts a Markdown reference", async ({page}) => {
   await page.goto("/");
   await openNewDocument(page);

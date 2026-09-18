@@ -1126,6 +1126,10 @@ async function uploadAndInsert(view: EditorView, file: File, from: number, to = 
 
 const imageUploadHandlers = EditorView.domEventHandlers({
   paste(event, view) {
+    // Text on the clipboard always wins. Word, Excel, Preview and many web pages
+    // put a rendered image alongside the copied text, and treating that as an
+    // image paste would silently swallow an ordinary text paste.
+    if (event.clipboardData?.getData("text/plain")) return false;
     const item = Array.from(event.clipboardData?.items ?? []).find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
     const file = item?.getAsFile();
     if (!file) return false; // Let normal text paste proceed.

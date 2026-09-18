@@ -226578,6 +226578,7 @@ Please report this to https://github.com/markedjs/marked.`, e3) {
   }
   var imageUploadHandlers = EditorView.domEventHandlers({
     paste(event3, view) {
+      if (event3.clipboardData?.getData("text/plain")) return false;
       const item = Array.from(event3.clipboardData?.items ?? []).find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
       const file = item?.getAsFile();
       if (!file) return false;
